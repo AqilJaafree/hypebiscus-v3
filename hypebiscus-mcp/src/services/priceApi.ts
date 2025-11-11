@@ -151,19 +151,19 @@ export class PriceApiService {
 
     let priceData: PriceData | null = null;
 
-    // Try Birdeye first if available and address provided
-    if (this.birdeyeClient && tokenAddress) {
-      priceData = await this.getPriceFromBirdeye(tokenAddress);
-      if (priceData) {
-        logger.info(`Got price for ${tokenSymbol} from Birdeye: $${priceData.price}`);
-      }
-    }
-
-    // Fallback to Jupiter (requires token address)
-    if (!priceData && tokenAddress) {
+    // Try Jupiter FIRST (free, reliable, includes 24h change)
+    if (tokenAddress) {
       priceData = await this.getPriceFromJupiter(tokenSymbol, tokenAddress);
       if (priceData) {
         logger.info(`Got price for ${tokenSymbol} from Jupiter: $${priceData.price}`);
+      }
+    }
+
+    // Fallback to Birdeye if available and address provided
+    if (!priceData && this.birdeyeClient && tokenAddress) {
+      priceData = await this.getPriceFromBirdeye(tokenAddress);
+      if (priceData) {
+        logger.info(`Got price for ${tokenSymbol} from Birdeye: $${priceData.price}`);
       }
     }
 

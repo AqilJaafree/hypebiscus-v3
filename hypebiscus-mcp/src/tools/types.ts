@@ -147,7 +147,7 @@ export class HypebiscusMCPError extends Error {
 // Token mint addresses (Solana mainnet)
 export const TOKEN_MINTS = {
   SOL: 'So11111111111111111111111111111111111111112',
-  zBTC: 'ZBTCZSGiyMQzb2S71YJ2xHAA3Mu2a4vNcTAuz3BVbd6',
+  zBTC: 'zBTCug3er3tLyffELcvDNrKkCymbPWysGcWihESYfLg', // Actual zBTC from Meteora pool (tracked by Jupiter)
   wBTC: '3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh',
   cbBTC: 'CBBTCbZu5MtBJVB3qhLbw6aFoPJKhRKSaJpU9jJ4K3M9',
 } as const;
