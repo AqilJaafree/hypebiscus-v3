@@ -15,11 +15,6 @@ const Menu = () => {
       path: "/",
     },
     {
-      label: "Dashboard",
-      icon: ChartLineIcon,
-      path: "/dashboard",
-    },
-    {
       label: "Premium",
       emoji: "🤖",
       path: "/premium",

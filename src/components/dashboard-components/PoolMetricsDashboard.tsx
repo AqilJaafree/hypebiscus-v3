@@ -88,6 +88,15 @@ const PoolMetricsDashboard: React.FC = () => {
   if (loading) {
     return (
       <div className="space-y-4">
+        <Alert className="bg-blue-500/10 border-blue-500/30">
+          <AlertDescription className="text-blue-400">
+            🔄 Loading pool metrics from Render MCP server...
+            <br />
+            <span className="text-sm text-gray-400">
+              First load may take up to 60 seconds as the server wakes up (Render free tier)
+            </span>
+          </AlertDescription>
+        </Alert>
         <div className="flex items-center justify-between">
           <Skeleton className="h-8 w-48" />
           <Skeleton className="h-6 w-32" />
@@ -103,12 +112,13 @@ const PoolMetricsDashboard: React.FC = () => {
 
   if (error) {
     const is502Error = error.includes('502');
-    const errorMessage = is502Error
-      ? '🔄 MCP server is waking up from sleep (Render free tier). This may take 30-60 seconds...'
+    const isTimeoutError = error.toLowerCase().includes('timeout');
+    const errorMessage = is502Error || isTimeoutError
+      ? '🔄 MCP server is waking up from sleep (Render free tier). Please wait or click Retry...'
       : `⚠️ ${error}`;
 
     return (
-      <Alert variant={is502Error ? "default" : "destructive"}>
+      <Alert variant={is502Error || isTimeoutError ? "default" : "destructive"}>
         <AlertDescription className="flex items-center justify-between">
           <span>{errorMessage}</span>
           <button

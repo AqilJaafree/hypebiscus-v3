@@ -5,6 +5,9 @@ import { validateMCPRequest } from '@/lib/utils/validation';
 
 const MCP_SERVER_URL = process.env.MCP_SERVER_URL || 'http://localhost:3001';
 
+// Configure route to allow longer execution for Render cold starts
+export const maxDuration = 90; // 90 seconds
+
 export async function POST(request: NextRequest) {
   try {
     // Rate limiting (30 requests per minute per IP for MCP data fetching)
@@ -57,13 +60,14 @@ export async function POST(request: NextRequest) {
     }
 
     // Forward transformed request to MCP server (Docker container)
+    // Use 90s timeout to handle Render free tier cold start (30-60s)
     const mcpResponse = await fetch(MCP_SERVER_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(httpBridgeRequest),
-      signal: AbortSignal.timeout(30000), // 30 second timeout
+      signal: AbortSignal.timeout(90000), // 90 second timeout for Render cold start
     });
 
     if (!mcpResponse.ok) {
@@ -116,7 +120,7 @@ export async function GET() {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(mcpRequest),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(90000), // 90s timeout for Render cold start
     });
 
     if (!mcpResponse.ok) {
