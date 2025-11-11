@@ -103,10 +103,10 @@ export class PriceApiService {
     try {
       const response = await withRetry(
         async () => {
-          logger.debug(`Fetching price from Jupiter: ${tokenSymbol} (${tokenAddress})`);
+          logger.debug(`Fetching price from Jupiter lite-api v2: ${tokenSymbol} (${tokenAddress})`);
           return await this.jupiterClient.get('', {
             params: {
-              ids: tokenAddress, // Use mint address instead of symbol
+              ids: tokenAddress, // Use mint address
             },
           });
         },
@@ -114,12 +114,13 @@ export class PriceApiService {
         1000
       );
 
-      // Jupiter returns data keyed by mint address, not symbol
+      // Jupiter lite-api v2 returns data keyed by mint address
       if (response.data?.data?.[tokenAddress]) {
         const data = response.data.data[tokenAddress];
+        const price = typeof data.price === 'string' ? parseFloat(data.price) : data.price;
         return {
-          price: data.price || 0,
-          change24h: 0, // Jupiter doesn't provide 24h change
+          price: price || 0,
+          change24h: 0, // Jupiter lite-api v2 doesn't provide 24h change
         };
       }
 
