@@ -7,6 +7,7 @@ import { config, logger } from '../config.js';
 import { prisma, dbUtils } from './database.js';
 import { priceApi } from './priceApi.js';
 import { withRetry } from '../utils/errors.js';
+import { TOKEN_MINTS } from '../tools/types.js';
 
 interface SyncStatistics {
   usersProcessed: number;
@@ -226,8 +227,8 @@ export class BackgroundSyncService {
 
       // Get current token prices for USD calculations
       const prices = await priceApi.getMultiplePrices([
-        { symbol: 'zBTC' },
-        { symbol: 'SOL' },
+        { symbol: 'zBTC', address: TOKEN_MINTS.zBTC },
+        { symbol: 'SOL', address: TOKEN_MINTS.SOL },
       ]);
 
       const zbtcPrice = prices.get('zBTC')?.price ?? 0;

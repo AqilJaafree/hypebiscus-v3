@@ -330,7 +330,8 @@ class MCPHttpBridge {
  * Main entry point
  */
 async function main(): Promise<void> {
-  const port = parseInt(process.env.HTTP_PORT || '3001', 10);
+  // Render sets PORT automatically; fall back to HTTP_PORT for local dev
+  const port = parseInt(process.env.PORT || process.env.HTTP_PORT || '3001', 10);
   const bridge = new MCPHttpBridge(port);
 
   // Handle process signals
