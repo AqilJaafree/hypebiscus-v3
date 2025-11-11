@@ -1,0 +1,59 @@
+# Render Blueprint for Hypebiscus Main Application
+# https://render.com/docs/blueprint-spec
+
+services:
+  # Main Next.js Web Application
+  - type: web
+    name: hypebiscus-web
+    runtime: node
+    plan: starter
+    region: oregon
+    branch: main
+    buildCommand: pnpm install && pnpm build
+    startCommand: pnpm start
+    healthCheckPath: /
+
+    envVars:
+      # Public environment variables (safe to include)
+      - key: NODE_ENV
+        value: production
+
+      - key: NEXT_PUBLIC_SOLANA_NETWORK
+        value: mainnet-beta
+
+      - key: NEXT_PUBLIC_APP_URL
+        generateValue: true  # Render will auto-generate the service URL
+
+      # x402 Payment Configuration (public addresses)
+      - key: X402_TREASURY_ADDRESS
+        value: YV2C7YyrkH67jTRZHvwovJfSK6BqiJJMycmRSXSWEy2
+
+      - key: X402_FACILITATOR_URL
+        value: https://facilitator.payai.network
+
+      - key: NEXT_PUBLIC_X402_TREASURY_ADDRESS
+        value: YV2C7YyrkH67jTRZHvwovJfSK6BqiJJMycmRSXSWEy2
+
+      # MagicBlock Configuration (if still using)
+      - key: NEXT_PUBLIC_MAGICBLOCK_RPC_URL
+        value: https://devnet.magicblock.app
+
+      - key: NEXT_PUBLIC_MAGICBLOCK_WS_URL
+        value: wss://devnet.magicblock.app
+
+      # Pyth BTC/USD Feed ID
+      - key: NEXT_PUBLIC_BTC_PYTH_FEED_ID
+        value: 0xe62df6c8b4c85fe1d7036993cd98c5afe4b4cf36f4e9d1b5e0f6f7a21b5a6a4a
+
+      # IMPORTANT: Add these secrets in Render Dashboard (NOT here):
+      # - ANTHROPIC_API_KEY
+      # - NEXT_PUBLIC_SOLANA_RPC_URL (with Helius API key)
+      # - DATABASE_URL (Supabase connection string)
+      # - MCP_SERVER_URL (hypebiscus-mcp service URL)
+      # - NEXT_PUBLIC_WEB3AUTH_CLIENT_ID (if using)
+
+# Important Notes:
+# 1. DO NOT add secrets to this file
+# 2. Set secrets via Render Dashboard: Settings → Environment → Add Environment Variable
+# 3. After deploying hypebiscus-mcp, update MCP_SERVER_URL with its service URL
+# 4. Ensure all API keys are rotated before deployment

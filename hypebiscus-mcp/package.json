@@ -1,0 +1,55 @@
+{
+  "name": "hypebiscus-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Hypebiscus DeFi platform - real-time Meteora DLMM pool metrics",
+  "main": "dist/index.js",
+  "bin": {
+    "hypebiscus-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "prisma generate && tsc && chmod +x dist/index.js && chmod +x dist/http-server.js",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "start:http": "node dist/http-server.js",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts",
+    "prisma:generate": "prisma generate"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "defi",
+    "solana",
+    "meteora",
+    "dlmm"
+  ],
+  "author": "Hypebiscus Team",
+  "license": "MIT",
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@meteora-ag/dlmm": "^1.8.0",
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "@prisma/client": "^6.18.0",
+    "@solana/web3.js": "^1.95.8",
+    "@types/bn.js": "^5.2.0",
+    "axios": "^1.7.9",
+    "bn.js": "^5.2.2",
+    "bs58": "^6.0.0",
+    "dotenv": "^16.4.7",
+    "lucide-react": "^0.553.0",
+    "prisma": "^6.18.0",
+    "react-qr-code": "^2.0.18",
+    "tweetnacl": "^1.0.3",
+    "x402-solana": "^0.1.3",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/bs58": "^5.0.0",
+    "@types/node": "^20.17.10",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

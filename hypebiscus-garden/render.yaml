@@ -1,0 +1,47 @@
+# Render Blueprint for Hypebiscus Telegram Bot
+# https://render.com/docs/blueprint-spec
+
+services:
+  # Telegram Bot Background Worker
+  - type: worker
+    name: hypebiscus-garden-bot
+    runtime: node
+    plan: starter
+    region: oregon
+    branch: main
+    rootDir: hypebiscus-garden
+    buildCommand: pnpm install && pnpm db:generate
+    startCommand: pnpm start
+
+    envVars:
+      # Public configuration
+      - key: NODE_ENV
+        value: production
+
+      # Monitoring Configuration
+      - key: MONITORING_INTERVAL_MS
+        value: 30000
+
+      # Pool Configuration (zBTC-SOL DLMM)
+      - key: ZBTC_SOL_POOL_ADDRESS
+        value: B5KcmVe9VpJuvWVdEphCF25mMbvrEZxXw82A299bwcYK
+
+      - key: ZBTC_MINT_ADDRESS
+        value: zBTCug3er3tLyffELcvDNrKkCymbPWysGcWihESYfLg
+
+      # IMPORTANT: Add these secrets in Render Dashboard (NOT here):
+      # - TELEGRAM_BOT_TOKEN (from @BotFather)
+      # - SOLANA_RPC_URL (Helius RPC with API key)
+      # - DATABASE_URL (Supabase connection string)
+      # - ENCRYPTION_KEY (64-char hex string for wallet encryption)
+      # - WALLET_LINK_SECRET (64-char hex string for HMAC - MUST match MCP server)
+      # - MCP_SERVER_URL (hypebiscus-mcp service URL after deployment)
+
+# Important Notes:
+# 1. DO NOT add secrets to this file
+# 2. Set secrets via Render Dashboard: Settings → Environment → Add Environment Variable
+# 3. WALLET_LINK_SECRET must match the one used in hypebiscus-mcp
+# 4. MCP_SERVER_URL should be set to the deployed MCP service URL
+#    (e.g., https://hypebiscus-mcp.onrender.com)
+# 5. This runs as a background worker (no HTTP port)
+# 6. Monitor logs via Render Dashboard to ensure bot is running

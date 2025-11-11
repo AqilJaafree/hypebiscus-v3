@@ -1,0 +1,78 @@
+# Render Blueprint for Hypebiscus MCP Server
+# https://render.com/docs/blueprint-spec
+
+services:
+  # MCP Server with HTTP Bridge
+  - type: web
+    name: hypebiscus-mcp
+    runtime: docker
+    plan: starter
+    region: oregon
+    branch: main
+    rootDir: hypebiscus-mcp
+    dockerfilePath: ./Dockerfile.http
+    healthCheckPath: /health
+
+    envVars:
+      # Public configuration
+      - key: NODE_ENV
+        value: production
+
+      - key: HTTP_PORT
+        value: 3001
+
+      - key: SOLANA_NETWORK
+        value: mainnet-beta
+
+      - key: LOG_LEVEL
+        value: info
+
+      # Cache & Performance
+      - key: CACHE_TTL
+        value: 30
+
+      - key: REQUEST_TIMEOUT
+        value: 15000
+
+      # Background Sync Configuration
+      - key: BACKGROUND_SYNC_ENABLED
+        value: true
+
+      - key: BACKGROUND_SYNC_INTERVAL
+        value: 300000
+
+      # x402 Payment Configuration
+      - key: X402_FACILITATOR_URL
+        value: https://facilitator.payai.network
+
+      - key: X402_TREASURY_ADDRESS
+        value: YV2C7YyrkH67jTRZHvwovJfSK6BqiJJMycmRSXSWEy2
+
+      # Pricing Configuration
+      - key: SUBSCRIPTION_PRICE_USDC
+        value: 4.99
+
+      - key: CREDIT_PRICE_USDC
+        value: 0.01
+
+      - key: CREDITS_PER_REPOSITION
+        value: 1
+
+      # Default Pool Address (zBTC-SOL DLMM)
+      - key: DEFAULT_POOL_ADDRESS
+        value: B5KcmVe9VpJuvWVdEphCF25mMbvrEZxXw82A299bwcYK
+
+      # IMPORTANT: Add these secrets in Render Dashboard (NOT here):
+      # - DATABASE_URL (Supabase connection with pgbouncer params)
+      # - SOLANA_RPC_URL (Helius RPC with API key)
+      # - CONTEXT_7 (Context7 API key)
+      # - WALLET_LINK_SECRET (64-char hex string for HMAC)
+      # - BIRDEYE_API_KEY (optional, for enhanced price data)
+
+# Important Notes:
+# 1. DO NOT add secrets to this file
+# 2. Set secrets via Render Dashboard: Settings → Environment → Add Environment Variable
+# 3. DATABASE_URL should include pgbouncer params: ?pgbouncer=true&connection_limit=5&pool_timeout=10&connect_timeout=10
+# 4. WALLET_LINK_SECRET must match the one used in hypebiscus-garden bot
+# 5. After deployment, copy the service URL (e.g., https://hypebiscus-mcp.onrender.com)
+#    and set it as MCP_SERVER_URL in the main app and bot

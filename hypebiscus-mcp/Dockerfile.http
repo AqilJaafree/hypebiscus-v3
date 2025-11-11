@@ -1,0 +1,91 @@
+# ==========================================
+# Hypebiscus MCP Server - HTTP Bridge Dockerfile
+# ==========================================
+# Multi-stage build with HTTP bridge for Next.js integration
+# Exposes MCP tools via HTTP while maintaining stdio compatibility
+
+# ==========================================
+# Stage 1: Build Stage
+# ==========================================
+FROM node:18.20.0-alpine AS builder
+
+# Install pnpm globally
+RUN npm install -g pnpm@10.11.0
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package.json pnpm-lock.yaml ./
+
+# Install ALL dependencies with mount cache
+RUN --mount=type=cache,target=/root/.npm \
+    pnpm install --frozen-lockfile
+
+# Copy Prisma schema
+COPY prisma ./prisma
+
+# Generate Prisma client
+RUN pnpm prisma:generate
+
+# Copy source code and configuration
+COPY tsconfig.json ./
+COPY src ./src
+
+# Build TypeScript to JavaScript
+RUN pnpm build
+
+# ==========================================
+# Stage 2: Production Stage
+# ==========================================
+FROM node:18.20.0-alpine AS production
+
+# Install pnpm
+RUN npm install -g pnpm@10.11.0
+
+# Create non-root user
+RUN addgroup -g 1001 -S mcpuser && \
+    adduser -S mcpuser -u 1001 -G mcpuser
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files with ownership
+COPY --chown=mcpuser:mcpuser package.json pnpm-lock.yaml ./
+
+# Copy Prisma schema with ownership
+COPY --chown=mcpuser:mcpuser prisma ./prisma
+
+# Install production dependencies and generate Prisma client with mount cache
+RUN --mount=type=cache,target=/root/.npm,uid=1001 \
+    pnpm install --frozen-lockfile --prod && \
+    pnpm prisma:generate
+
+# Copy compiled code from builder with ownership
+COPY --chown=mcpuser:mcpuser --from=builder /app/dist ./dist
+
+# Switch to non-root user
+USER mcpuser
+
+# Environment variables
+ENV NODE_ENV=production \
+    SOLANA_RPC_URL=https://api.mainnet-beta.solana.com \
+    HTTP_PORT=3001 \
+    CACHE_TTL=30 \
+    REQUEST_TIMEOUT=10000 \
+    LOG_LEVEL=info
+
+# Expose HTTP port
+EXPOSE 3001
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3001/ || exit 1
+
+# Entry point - runs HTTP bridge
+ENTRYPOINT ["node", "dist/http-server.js"]
+
+# Labels
+LABEL maintainer="Hypebiscus Team" \
+      description="MCP HTTP bridge for Next.js integration" \
+      version="1.0.0"

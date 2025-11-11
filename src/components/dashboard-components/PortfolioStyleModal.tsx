@@ -1,0 +1,136 @@
+"use client";
+
+import React, { useState } from 'react';
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+
+interface PortfolioStyleModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSelectStyle: (style: string) => void;
+}
+
+type PortfolioStyle = {
+  id: string;
+  title: string;
+  description: string;
+  icon?: string;
+};
+
+const PortfolioStyleModal: React.FC<PortfolioStyleModalProps> = ({ 
+  isOpen, 
+  onClose,
+  onSelectStyle
+}) => {
+  const [selectedStyle, setSelectedStyle] = useState<string | null>(null);
+  
+  const portfolioStyles: PortfolioStyle[] = [
+    {
+      id: 'conservative',
+      title: 'Conservative',
+      description: 'Protect your capital by focusing on stable, audited pools-lower risk, safe but smaller returns.',
+      icon: '🛡️'
+    },
+    {
+      id: 'moderate',
+      title: 'Moderate',
+      description: 'Balance growth and stability using a mix of established and growth pools-moderate risk, steadier returns.',
+      icon: '⚖️'
+    },
+    {
+      id: 'aggressive',
+      title: 'Aggressive',
+      description: 'Maximize returns with higher-yield, more volatile pools-expect bigger ups and downs.',
+      icon: '🚀'
+    }
+  ];
+  
+  const handleStyleSelect = (styleId: string) => {
+    setSelectedStyle(styleId);
+  };
+  
+  const handleConfirm = () => {
+    if (selectedStyle) {
+      onSelectStyle(selectedStyle);
+      onClose();
+    }
+  };
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent aria-describedby="portfolio-style-description">
+        <DialogTitle className='text-center text-2xl font-bold'>
+          Choose Your Portfolio Style
+        </DialogTitle>
+        <DialogDescription id="portfolio-style-description" className="text-center text-sub-text">
+          Select your preferred investment style to get recommendations that match your risk tolerance and goals.
+        </DialogDescription>
+        
+        {/* Modal Content */}
+        <div className='pt-8'>  
+          {/* Subtitle */}
+          <div className="mb-6 flex flex-col items-start ">
+            <h3 className="text-md white mb-2">Select Your Preferred Investment Style</h3>
+            <p className="text-sm text-sub-text">
+              Choose how you want to grow your portfolio. Your selection helps us recommend the best liquidity pools for your risk comfort and goals.
+            </p>
+          </div>
+          
+          {/* Options */}
+          <div className="space-y-3 mb-8" role="radiogroup" aria-labelledby="portfolio-style-description">
+            {portfolioStyles.map((style) => {
+              const isSelected = selectedStyle === style.id;
+              
+              return (
+                <div
+                  key={style.id}
+                  className={`cursor-pointer rounded-2xl border px-5 py-4 transition-all ${
+                    isSelected ? "bg-primary border-primary" : "bg-transparent border-primary"
+                  }`}
+                  onClick={() => handleStyleSelect(style.id)}
+                  role="radio"
+                  aria-checked={isSelected}
+                  aria-labelledby={`style-${style.id}-title`}
+                  aria-describedby={`style-${style.id}-desc`}
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleStyleSelect(style.id);
+                    }
+                  }}
+                >
+                  <div className="flex items-center">
+                    <div className="flex-1">
+                      <div className="flex items-center">
+                        {style.icon && <span className="mr-2" aria-hidden="true">{style.icon}</span>}
+                        <h3 id={`style-${style.id}-title`} className="font-medium text-white">
+                          {style.title}
+                        </h3>
+                      </div>
+                      <p id={`style-${style.id}-desc`} className="text-sm text-white mt-1">
+                        {style.description}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          
+          {/* Continue Button */}
+          <Button
+            variant="default"
+            onClick={handleConfirm}
+            disabled={!selectedStyle}
+            className="w-full"
+          >
+            Continue
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+};
+
+export default PortfolioStyleModal;

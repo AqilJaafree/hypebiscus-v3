@@ -1,0 +1,125 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                     String                  @id @default(uuid())
+  telegramId             BigInt                  @unique
+  username               String?
+  isMonitoring           Boolean                 @default(false)
+  createdAt              DateTime                @default(now())
+  linkedWalletAddress    String?                 @map("linked_wallet_address")
+  walletLinkToken        String?                 @map("wallet_link_token")
+  walletLinkExpiresAt    DateTime?               @map("wallet_link_expires_at")
+  positions              Position[]
+  stats                  UserStats?
+  wallet                 Wallet?
+  repositionSettings     UserRepositionSettings?
+
+  @@index([telegramId])
+  @@index([linkedWalletAddress])
+  @@map("users")
+}
+
+model Wallet {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  publicKey String   @unique
+  encrypted String
+  iv        String
+  createdAt DateTime @default(now())
+  source    String   @default("telegram")
+  isActive  Boolean  @default(true) @map("is_active")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([publicKey])
+  @@unique([userId, source], name: "idx_wallets_user_source_active")
+  @@map("wallets")
+}
+
+model Position {
+  id                   String    @id @default(uuid())
+  userId               String
+  positionId           String    @unique
+  poolAddress          String
+  zbtcAmount           Decimal   @db.Decimal(20, 8)
+  entryPrice           Decimal   @db.Decimal(20, 8)
+  isActive             Boolean   @default(true)
+  createdAt            DateTime  @default(now())
+  lastChecked          DateTime  @default(now())
+  entryBin             Int       @default(0)
+  solAmount            Decimal   @default(0) @db.Decimal(20, 8)
+  zbtcReturned         Decimal?  @db.Decimal(20, 8)
+  solReturned          Decimal?  @db.Decimal(20, 8)
+  exitPrice            Decimal?  @db.Decimal(20, 8)
+  exitBin              Int?
+  zbtcFees             Decimal?  @default(0) @db.Decimal(20, 8)
+  solFees              Decimal?  @default(0) @db.Decimal(20, 8)
+  pnlUsd               Decimal?  @db.Decimal(20, 8)
+  pnlPercent           Decimal?  @db.Decimal(10, 4)
+  closedAt             DateTime? @db.Timestamp(6)
+  source               String    @default("telegram")
+  linkedWalletAddress  String?   @map("linked_wallet_address")
+  user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+  @@index([positionId])
+  @@index([source, isActive])
+  @@map("positions")
+}
+
+model UserStats {
+  id              String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId          String    @unique
+  totalPositions  Int?      @default(0)
+  activePositions Int?      @default(0)
+  totalZbtcFees   Decimal?  @default(0) @db.Decimal(20, 8)
+  totalSolFees    Decimal?  @default(0) @db.Decimal(20, 8)
+  totalPnlUsd     Decimal?  @default(0) @db.Decimal(20, 8)
+  avgPositionSize Decimal?  @default(0) @db.Decimal(20, 8)
+  avgHoldTime     Int?      @default(0)
+  updatedAt       DateTime? @default(now()) @updatedAt @db.Timestamp(6)
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_user")
+
+  @@map("user_stats")
+}
+
+model UserRepositionSettings {
+  id                         String    @id @default(dbgenerated("gen_random_uuid()::text"))
+  userId                     String    @unique @map("user_id")
+  autoRepositionEnabled      Boolean   @default(false) @map("auto_reposition_enabled")
+  urgencyThreshold           String    @default("medium") @map("urgency_threshold")
+  maxGasCostSol              Decimal   @default(0.02) @db.Decimal(20, 9) @map("max_gas_cost_sol")
+  minFeesToCollectUsd        Decimal   @default(5) @db.Decimal(20, 2) @map("min_fees_to_collect_usd")
+  allowedStrategies          String[]  @default(["one-sided-x", "one-sided-y", "balanced"]) @map("allowed_strategies")
+  telegramNotifications      Boolean   @default(true) @map("telegram_notifications")
+  websiteNotifications       Boolean   @default(true) @map("website_notifications")
+  updatedFrom                String?   @map("updated_from")
+  updatedAt                  DateTime  @default(now()) @updatedAt @map("updated_at")
+  createdAt                  DateTime  @default(now()) @map("created_at")
+  user                       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("user_reposition_settings")
+}
+
+model wallet_link_tokens {
+  id            String    @id @default(dbgenerated("gen_random_uuid()"))
+  token         String    @unique
+  shortToken    String?   @unique @map("short_token")
+  walletAddress String    @map("wallet_address")
+  expiresAt     DateTime  @map("expires_at")
+  used          Boolean   @default(false)
+  usedAt        DateTime? @map("used_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  ipAddress     String?   @map("ip_address")
+
+  @@index([token, used, expiresAt], map: "idx_token_lookup")
+  @@index([shortToken, used, expiresAt], map: "idx_short_token_lookup")
+  @@index([walletAddress, createdAt(sort: Desc)], map: "idx_wallet_tokens")
+}

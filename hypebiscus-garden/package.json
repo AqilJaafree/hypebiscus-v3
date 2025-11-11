@@ -1,0 +1,54 @@
+{
+  "name": "garden-zbtc-dlmm-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for automated ZBTC-SOL DLMM position management with Supabase",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:migrate": "prisma migrate dev",
+    "db:studio": "prisma studio",
+    "db:deploy": "prisma migrate deploy"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "solana",
+    "dlmm",
+    "meteora",
+    "crypto",
+    "defi",
+    "liquidity"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.29.0",
+    "@meteora-ag/dlmm": "^1.0.29",
+    "@prisma/client": "^5.7.1",
+    "@solana/spl-token": "^0.3.9",
+    "@solana/web3.js": "^1.87.6",
+    "axios": "^1.13.2",
+    "bs58": "^5.0.0",
+    "dotenv": "^16.6.1",
+    "jimp": "^1.6.0",
+    "node-cron": "^3.0.3",
+    "qrcode-reader": "^1.0.4",
+    "telegraf": "^4.15.6"
+  },
+  "devDependencies": {
+    "@types/bs58": "^4.0.4",
+    "@types/node": "^20.10.5",
+    "@types/node-cron": "^3.0.11",
+    "prisma": "^5.7.1",
+    "tsx": "^4.6.2",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}

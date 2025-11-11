@@ -1,0 +1,199 @@
+# ==========================================
+# Hypebiscus MCP Server - Docker Compose
+# ==========================================
+# For local development and testing with Next.js integration
+# Production deployments should use Docker directly or orchestration tools
+# Note: 'version' is obsolete in Docker Compose v2+ and has been removed
+
+services:
+  # HTTP Bridge for Next.js integration
+  hypebiscus-mcp-http:
+    # Build configuration
+    build:
+      context: .
+      dockerfile: Dockerfile.http
+
+    # Container name
+    container_name: hypebiscus-mcp-http
+
+    # Image name and tag
+    image: hypebiscus-mcp:http
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Port mapping - expose HTTP bridge to host
+    ports:
+      - "3001:3001"
+
+    # Environment variables
+    environment:
+      # Required: Solana RPC endpoint
+      - SOLANA_RPC_URL=${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}
+
+      # Required: Database URL for user context
+      - DATABASE_URL=${DATABASE_URL}
+
+      # Optional: Birdeye API key
+      - BIRDEYE_API_KEY=${BIRDEYE_API_KEY:-}
+
+      # Optional: Default pool
+      - DEFAULT_POOL_ADDRESS=${DEFAULT_POOL_ADDRESS:-2onAYHGyxUV4JuYeUQbFwbKmKUXyTA9v5aKiDgZMyCeL}
+
+      # Optional: Configuration
+      - CACHE_TTL=${CACHE_TTL:-30}
+      - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-10000}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - HTTP_PORT=3001
+
+      # Security: Wallet linking HMAC secret
+      - WALLET_LINK_SECRET=${WALLET_LINK_SECRET}
+
+      # Production mode
+      - NODE_ENV=production
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.2'
+          memory: 256M
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Network
+    networks:
+      - hypebiscus-network
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+
+  # Original stdio server (for Claude Desktop)
+  hypebiscus-mcp:
+    # Build configuration
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    # Container name
+    container_name: hypebiscus-mcp
+
+    # Image name and tag
+    image: hypebiscus-mcp:latest
+
+    # Restart policy (for daemon mode)
+    # Note: MCP stdio servers typically don't run as daemons
+    # This is mainly for testing purposes
+    restart: unless-stopped
+
+    # Environment variables
+    # IMPORTANT: Use .env file or override these values
+    environment:
+      # Required: Solana RPC endpoint
+      - SOLANA_RPC_URL=${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}
+
+      # Required: Database URL for user context
+      - DATABASE_URL=${DATABASE_URL}
+
+      # Optional: Birdeye API key for enhanced price data
+      - BIRDEYE_API_KEY=${BIRDEYE_API_KEY:-}
+
+      # Optional: Default pool to query
+      - DEFAULT_POOL_ADDRESS=${DEFAULT_POOL_ADDRESS:-2onAYHGyxUV4JuYeUQbFwbKmKUXyTA9v5aKiDgZMyCeL}
+
+      # Optional: Cache configuration
+      - CACHE_TTL=${CACHE_TTL:-30}
+
+      # Optional: Request timeout
+      - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-10000}
+
+      # Optional: Log level (error, warn, info, debug)
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+
+      # Production mode
+      - NODE_ENV=production
+
+    # Resource limits (prevents container from consuming all host resources)
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'      # Max 50% of one CPU core
+          memory: 512M     # Max 512MB RAM
+        reservations:
+          cpus: '0.1'      # Min 10% of one CPU core
+          memory: 128M     # Min 128MB RAM
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"    # Max log file size
+        max-file: "3"      # Keep 3 log files
+
+    # Network
+    networks:
+      - hypebiscus-network
+
+    # No ports exposed (stdio transport)
+    # MCP communication happens via stdin/stdout, not HTTP
+
+    # Health check (optional - for monitoring)
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "node.*index.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true  # Prevent privilege escalation
+
+    # Read-only root filesystem (extra security)
+    # Disabled for now - may need write access for temp files
+    # read_only: true
+
+    # User (runs as non-root user defined in Dockerfile)
+    # user: "1001:1001"  # Already set in Dockerfile
+
+# Network definition
+networks:
+  hypebiscus-network:
+    driver: bridge
+
+# ==========================================
+# Optional: Development Override
+# ==========================================
+# To use development mode with hot reload:
+# docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+# Create docker-compose.dev.yml for development:
+# ---
+# version: '3.8'
+# services:
+#   hypebiscus-mcp:
+#     build:
+#       target: builder
+#     volumes:
+#       - ./src:/app/src:ro
+#       - ./tsconfig.json:/app/tsconfig.json:ro
+#     command: pnpm dev
+#     environment:
+#       - LOG_LEVEL=debug

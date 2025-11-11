@@ -1,0 +1,228 @@
+// Input validation utilities for API endpoints
+
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface ChatRequestBody {
+  messages: ChatMessage[]
+  poolData?: Record<string, unknown>
+  portfolioStyle?: string
+}
+
+export class ValidationError extends Error {
+  constructor(message: string, public field?: string) {
+    super(message)
+    this.name = 'ValidationError'
+  }
+}
+
+export function validateChatRequest(body: unknown): ChatRequestBody {
+  if (!body || typeof body !== 'object') {
+    throw new ValidationError('Invalid request body')
+  }
+
+  const { messages, poolData, portfolioStyle } = body as Record<string, unknown>
+
+  // Validate messages array
+  if (!messages || !Array.isArray(messages)) {
+    throw new ValidationError('Messages must be an array', 'messages')
+  }
+
+  // Allow empty messages array if poolData is provided (for initial pool analysis)
+  if (messages.length === 0 && !poolData) {
+    throw new ValidationError('Messages array cannot be empty when no pool data provided', 'messages')
+  }
+
+  if (messages.length > 50) {
+    throw new ValidationError('Too many messages. Maximum 50 messages allowed', 'messages')
+  }
+
+  // Validate each message (skip if empty array)
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i]
+    
+    if (!message || typeof message !== 'object') {
+      throw new ValidationError(`Message at index ${i} is invalid`, 'messages')
+    }
+
+    if (!message.role || !['user', 'assistant'].includes(message.role)) {
+      throw new ValidationError(`Message at index ${i} has invalid role`, 'messages')
+    }
+
+    if (typeof message.content !== 'string') {
+      throw new ValidationError(`Message at index ${i} content must be a string`, 'messages')
+    }
+
+    if (message.content.length === 0) {
+      throw new ValidationError(`Message at index ${i} content cannot be empty`, 'messages')
+    }
+
+    if (message.content.length > 10000) {
+      throw new ValidationError(`Message at index ${i} content too long. Maximum 10,000 characters allowed`, 'messages')
+    }
+
+    // Basic XSS prevention - reject obvious script tags
+    if (/<script|javascript:|on\w+\s*=/i.test(message.content)) {
+      throw new ValidationError(`Message at index ${i} contains potentially malicious content`, 'messages')
+    }
+  }
+
+  // Validate portfolioStyle if provided
+  if (portfolioStyle !== undefined) {
+    if (typeof portfolioStyle !== 'string') {
+      throw new ValidationError('Portfolio style must be a string', 'portfolioStyle')
+    }
+    
+    if (portfolioStyle.length > 100) {
+      throw new ValidationError('Portfolio style too long. Maximum 100 characters allowed', 'portfolioStyle')
+    }
+  }
+
+  // Validate poolData if provided (basic validation)
+  if (poolData !== undefined) {
+    if (typeof poolData !== 'object' || poolData === null) {
+      throw new ValidationError('Pool data must be an object', 'poolData')
+    }
+
+    // Convert to string to check serialized size
+    const poolDataString = JSON.stringify(poolData)
+    if (poolDataString.length > 50000) {
+      throw new ValidationError('Pool data too large. Maximum 50KB allowed', 'poolData')
+    }
+  }
+
+  return { 
+    messages: messages as ChatMessage[], 
+    poolData: poolData as Record<string, unknown> | undefined, 
+    portfolioStyle: portfolioStyle as string | undefined 
+  }
+}
+
+export function sanitizeString(input: string): string {
+  // Since React already provides XSS protection for text content,
+  // we only need to sanitize actual HTML tags that could be dangerous
+  // Don't encode normal characters like apostrophes and quotes
+  return input
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+export function validateRequestSize(request: Request): void {
+  const contentLength = request.headers.get('content-length')
+
+  if (contentLength) {
+    const size = parseInt(contentLength, 10)
+
+    // Maximum 1MB request size
+    if (size > 1024 * 1024) {
+      throw new ValidationError('Request body too large. Maximum 1MB allowed')
+    }
+  }
+}
+
+// MCP-specific validation
+export interface MCPRequestBody {
+  jsonrpc: string
+  method: string
+  params?: {
+    name?: string
+    arguments?: Record<string, unknown>
+  }
+  id: number | string
+}
+
+export function validateMCPRequest(body: unknown): { isValid: boolean; error?: string } {
+  if (!body || typeof body !== 'object') {
+    return { isValid: false, error: 'Invalid request body' };
+  }
+
+  const req = body as Record<string, unknown>;
+
+  // Validate JSON-RPC version
+  if (req.jsonrpc !== '2.0') {
+    return { isValid: false, error: 'Invalid JSON-RPC version. Must be "2.0"' };
+  }
+
+  // Validate method
+  if (typeof req.method !== 'string' || req.method.length === 0) {
+    return { isValid: false, error: 'Method must be a non-empty string' };
+  }
+
+  // Validate allowed methods
+  const allowedMethods = ['tools/list', 'tools/call'];
+  if (!allowedMethods.includes(req.method)) {
+    return { isValid: false, error: `Method must be one of: ${allowedMethods.join(', ')}` };
+  }
+
+  // Validate id
+  if (typeof req.id !== 'number' && typeof req.id !== 'string') {
+    return { isValid: false, error: 'ID must be a number or string' };
+  }
+
+  // Validate params for tools/call method
+  if (req.method === 'tools/call') {
+    if (!req.params || typeof req.params !== 'object') {
+      return { isValid: false, error: 'Params required for tools/call method' };
+    }
+
+    const params = req.params as Record<string, unknown>;
+
+    if (typeof params.name !== 'string' || params.name.length === 0) {
+      return { isValid: false, error: 'Tool name required and must be a non-empty string' };
+    }
+
+    // Validate tool name is one of the available tools
+    // IMPORTANT: This list must match the tools registered in hypebiscus-mcp/src/index.ts
+    const availableTools = [
+      'get_pool_metrics',
+      'get_user_by_wallet',
+      'get_user_positions',
+      'get_wallet_performance',
+      'get_position_details',
+      'get_dlmm_position',
+      'get_bin_distribution',
+      'calculate_rebalance',
+      'get_user_positions_with_sync',
+      'generate_wallet_link_token',
+      'link_wallet_by_short_token',
+      'link_wallet',
+      'get_linked_account',
+      'unlink_wallet',
+      'check_subscription',
+      'get_credit_balance',
+      'purchase_credits',
+      'use_credits',
+      'record_execution',
+      'get_reposition_settings',
+      'update_reposition_settings',
+      'analyze_reposition',
+      'prepare_reposition',
+      'get_position_chain',
+      'get_wallet_reposition_stats'
+    ];
+
+    if (!availableTools.includes(params.name)) {
+      return {
+        isValid: false,
+        error: `Unknown tool: ${params.name}. Available tools: ${availableTools.join(', ')}`
+      };
+    }
+
+    // Validate arguments if provided
+    if (params.arguments !== undefined) {
+      if (typeof params.arguments !== 'object' || params.arguments === null) {
+        return { isValid: false, error: 'Arguments must be an object' };
+      }
+
+      // Check serialized size
+      const argsString = JSON.stringify(params.arguments);
+      if (argsString.length > 10000) {
+        return { isValid: false, error: 'Arguments too large. Maximum 10KB allowed' };
+      }
+    }
+  }
+
+  return { isValid: true };
+}
