@@ -17,9 +17,12 @@ import {
   LinkIcon,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import Image from "next/image";
 import type { PositionType } from "@/lib/meteora/meteoraDlmmService";
 import { WalletLinkingCard } from "@/components/mcp-components/WalletLinkingCard";
+import { WalletDeletionDialog } from "@/components/mcp-components/WalletDeletionDialog";
+import { mcpClient, type PositionPnLResult, type UserTierInfo } from "@/lib/mcp-client";
 
 // ===================== JUPITER LITE API INTEGRATION =====================
 // This section uses the Jupiter Lite API (https://lite-api.jup.ag) to fetch
@@ -124,7 +127,8 @@ function useTokenMeta(pool: PoolWithActiveId) {
 function usePositionActions(
   lbPairAddress: string,
   pos: PositionType,
-  refreshPositions: () => void
+  refreshPositions: () => void,
+  onPnLUpdate?: (positionId: string, pnl: PositionPnLResult) => void
 ) {
   const [closing, setClosing] = React.useState(false);
   const [claiming, setClaiming] = React.useState(false);
@@ -133,6 +137,8 @@ function usePositionActions(
   async function handleCloseAndWithdraw() {
     if (!publicKey) return;
     setClosing(true);
+    let txSignature: string | undefined;
+
     try {
       const posKey = pos.publicKey;
       const user = publicKey;
@@ -154,17 +160,54 @@ function usePositionActions(
         bps: new BN(10000),
         shouldClaimAndClose: true,
       });
+
+      // Execute transaction(s) and get signature
       if (Array.isArray(txOrTxs)) {
         for (const tx of txOrTxs) {
-          await sendTransaction(tx, connection);
+          const sig = await sendTransaction(tx, connection);
+          if (!txSignature) txSignature = sig; // Store first signature
         }
       } else {
-        await sendTransaction(txOrTxs, connection);
+        txSignature = await sendTransaction(txOrTxs, connection);
       }
+
       showToast.success(
-        "Transaction successful",
-        "Your position has been closed and your funds have been withdrawn."
+        "Position closed on blockchain",
+        "Calculating PnL..."
       );
+
+      // Call MCP to calculate PnL and update database
+      // Following Garden Bot pattern: closeOnBlockchain=false (already closed above)
+      try {
+        const mcpResult = await mcpClient.closePosition({
+          positionId: posKey.toBase58(),
+          walletAddress: publicKey.toBase58(),
+          closeOnBlockchain: false,
+          transactionSignature: txSignature,
+        });
+
+        if (mcpResult.success && mcpResult.pnl) {
+          // Update PnL state
+          if (onPnLUpdate) {
+            onPnLUpdate(posKey.toBase58(), mcpResult.pnl);
+          }
+
+          // Show PnL summary
+          const pnl = mcpResult.pnl;
+          const pnlSign = pnl.realizedPnlUsd >= 0 ? '+' : '';
+          showToast.success(
+            "Position Closed Successfully!",
+            `PnL: ${pnlSign}$${pnl.realizedPnlUsd.toFixed(2)} (${pnlSign}${pnl.realizedPnlPercent.toFixed(2)}%)\nFees: $${pnl.feesEarnedUsd.toFixed(2)}\nIL: $${pnl.impermanentLoss.usd.toFixed(2)}`
+          );
+        }
+      } catch (mcpError) {
+        console.error('MCP PnL calculation failed:', mcpError);
+        showToast.error(
+          "Position closed, but PnL calculation failed",
+          "Position was closed on blockchain successfully, but we couldn't calculate the final PnL."
+        );
+      }
+
       // Add delay to allow blockchain state to update before refreshing
       setTimeout(() => {
         refreshPositions();
@@ -347,6 +390,8 @@ function PositionItem({
   refreshPositions,
   viewMode,
   positionIndex = 0,
+  pnl,
+  onPnLUpdate,
 }: {
   lbPairAddress: string;
   positionInfo: {
@@ -357,6 +402,8 @@ function PositionItem({
   refreshPositions: () => void;
   viewMode: "table" | "card";
   positionIndex?: number;
+  pnl?: PositionPnLResult;
+  onPnLUpdate?: (positionId: string, pnl: PositionPnLResult) => void;
 }) {
   const pos = positionInfo.lbPairPositionsData[positionIndex];
   const pool = positionInfo.lbPair;
@@ -369,7 +416,7 @@ function PositionItem({
     handleCloseAndWithdraw,
     handleClaimFees,
     publicKey,
-  } = usePositionActions(lbPairAddress, pos, refreshPositions);
+  } = usePositionActions(lbPairAddress, pos, refreshPositions, onPnLUpdate);
 
   // Use shared hook for display data
   const {
@@ -563,10 +610,10 @@ function PositionItem({
         </div>
 
         {/* Summary Cards */}
-        <div className="flex flex-col md:flex-row gap-6 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           <div>
             <div className="text-sm text-gray-400 mb-1">Total Liquidity</div>
-            <div className="text-2xl font-semibold text-white">
+            <div className="text-xl font-semibold text-white">
               ${totalLiquidityUSD.toFixed(4)}
             </div>
           </div>
@@ -574,10 +621,32 @@ function PositionItem({
             <div className="text-sm text-gray-400 mb-1">
               Fees Earned (Claimed)
             </div>
-            <div className="text-2xl font-semibold text-white">
+            <div className="text-xl font-semibold text-white">
               ${claimedFeesUSD.toFixed(8)}
             </div>
           </div>
+          {pnl && (
+            <>
+              <div>
+                <div className="text-sm text-gray-400 mb-1">PnL</div>
+                <div className={`text-xl font-semibold ${pnl.realizedPnlUsd >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                  {pnl.realizedPnlUsd >= 0 ? '+' : ''}${pnl.realizedPnlUsd.toFixed(2)}
+                  <span className="text-sm ml-1">
+                    ({pnl.realizedPnlPercent >= 0 ? '+' : ''}{pnl.realizedPnlPercent.toFixed(2)}%)
+                  </span>
+                </div>
+              </div>
+              <div>
+                <div className="text-sm text-gray-400 mb-1">Impermanent Loss</div>
+                <div className={`text-xl font-semibold ${pnl.impermanentLoss.usd >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                  {pnl.impermanentLoss.usd >= 0 ? '+' : ''}${pnl.impermanentLoss.usd.toFixed(2)}
+                  <span className="text-sm ml-1">
+                    ({pnl.impermanentLoss.percent >= 0 ? '+' : ''}{pnl.impermanentLoss.percent.toFixed(2)}%)
+                  </span>
+                </div>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Range */}
@@ -660,6 +729,10 @@ const WalletPage = () => {
     typeof window !== "undefined" && window.innerWidth < 640 ? "card" : "table"
   );
   const [activeTab, setActiveTab] = useState<"positions" | "link">("positions");
+  const [pnlData, setPnlData] = useState<Map<string, PositionPnLResult>>(new Map());
+  const [loadingPnl, setLoadingPnl] = useState(false);
+  const [userTier, setUserTier] = useState<UserTierInfo | null>(null);
+  const [loadingTier, setLoadingTier] = useState(false);
 
   // Check for tab query parameter
   useEffect(() => {
@@ -671,6 +744,37 @@ const WalletPage = () => {
       }
     }
   }, []);
+
+  // Fetch user tier when wallet connects
+  useEffect(() => {
+    const fetchUserTier = async () => {
+      if (!publicKey || !connected) {
+        setUserTier(null);
+        return;
+      }
+
+      setLoadingTier(true);
+      try {
+        const tierInfo = await mcpClient.getUserTier(publicKey.toBase58());
+        setUserTier(tierInfo);
+        console.log(`👤 User tier: ${tierInfo.tier} | Subscription: ${tierInfo.hasActiveSubscription} | Credits: ${tierInfo.creditBalance}`);
+      } catch (error) {
+        console.error('Failed to fetch user tier:', error);
+        // Default to free tier on error
+        setUserTier({
+          tier: 'free',
+          hasActiveSubscription: false,
+          creditBalance: 0,
+          canAccessFullPnL: false,
+          canAccessAdvancedFeatures: false,
+        });
+      } finally {
+        setLoadingTier(false);
+      }
+    };
+
+    fetchUserTier();
+  }, [connected, publicKey]);
 
   // Responsive: switch to card view on mobile by default
   useEffect(() => {
@@ -763,6 +867,133 @@ const WalletPage = () => {
     Map<string, PositionInfoType>
   >(new Map());
 
+  // Fetch PnL data for all positions
+  const fetchPnLData = async (positionsMap: Map<string, unknown>) => {
+    if (!publicKey) return;
+
+    setLoadingPnl(true);
+    const newPnlData = new Map<string, PositionPnLResult>();
+
+    try {
+      // Step 1: Sync positions to MCP database first
+      console.log(`🔄 Syncing ${positionsMap.size} positions to MCP database...`);
+      try {
+        await mcpClient.getUserPositionsWithSync({
+          walletAddress: publicKey.toBase58(),
+          includeHistorical: false,
+          includeLive: true,
+        });
+        console.log(`✅ Position sync completed`);
+      } catch (syncError) {
+        console.warn(`⚠️ Position sync failed:`, syncError);
+        // Continue anyway - fallback will handle it
+      }
+
+      // Step 2: Calculate PnL for each position
+      for (const [, positionInfo] of positionsMap.entries()) {
+        const typedPositionInfo = positionInfo as PositionInfoType;
+        const positions = typedPositionInfo.lbPairPositionsData;
+
+        for (const pos of positions) {
+          const positionId = pos.publicKey.toBase58();
+
+          try {
+            // Try MCP (accurate PnL with deposit tracking from database)
+            const pnl = await mcpClient.calculatePositionPnL({
+              positionId,
+            });
+
+            newPnlData.set(positionId, pnl);
+            console.log(`✅ MCP PnL calculated for ${positionId.substring(0, 8)}... | PnL: $${pnl.realizedPnlUsd.toFixed(2)}`);
+          } catch (mcpError) {
+            console.warn(`⚠️ MCP PnL failed for ${positionId.substring(0, 8)} - Position may lack deposit tracking`);
+            console.warn(`   Error:`, mcpError instanceof Error ? mcpError.message : mcpError);
+
+            // Fallback: Calculate estimated PnL from blockchain data only
+            // Note: This shows current value + fees but cannot calculate true PnL
+            try {
+              const estimatedPnl = await calculateEstimatedPnL(pos, typedPositionInfo.lbPair);
+              newPnlData.set(positionId, estimatedPnl);
+              console.log(`📊 Estimated PnL for ${positionId.substring(0, 8)}... | Value: $${estimatedPnl.currentValueUsd.toFixed(2)}`);
+            } catch (estError) {
+              console.error(`❌ Failed to calculate any PnL for ${positionId}:`, estError);
+            }
+          }
+        }
+      }
+
+      setPnlData(newPnlData);
+    } catch (error) {
+      console.error('Error fetching PnL data:', error);
+    } finally {
+      setLoadingPnl(false);
+    }
+  };
+
+  // Calculate estimated PnL when deposit tracking is not available
+  const calculateEstimatedPnL = async (pos: PositionType, pool: PoolWithActiveId): Promise<PositionPnLResult> => {
+    // Fetch token metadata
+    const xMint =
+      pool.tokenXMint &&
+      typeof (pool.tokenXMint as MaybeBase58).toBase58 === 'function'
+        ? (pool.tokenXMint as MaybeBase58).toBase58!()
+        : pool.tokenXMint;
+    const yMint =
+      pool.tokenYMint &&
+      typeof (pool.tokenYMint as MaybeBase58).toBase58 === 'function'
+        ? (pool.tokenYMint as MaybeBase58).toBase58!()
+        : pool.tokenYMint;
+
+    const [tokenXMeta, tokenYMeta] = await Promise.all([
+      fetchTokenMeta(xMint as string),
+      fetchTokenMeta(yMint as string),
+    ]);
+
+    // Get current amounts
+    const xDecimals = 8; // zBTC
+    const yDecimals = 9; // SOL
+    const currentXAmount = Number(pos.positionData.totalXAmount) / Math.pow(10, xDecimals);
+    const currentYAmount = Number(pos.positionData.totalYAmount) / Math.pow(10, yDecimals);
+
+    // Get current prices
+    const xPrice = Number(tokenXMeta?.usdPrice || 0);
+    const yPrice = Number(tokenYMeta?.usdPrice || 0);
+
+    // Calculate current value
+    const currentValueUsd = (currentXAmount * xPrice) + (currentYAmount * yPrice);
+
+    // Get fees
+    const xFee = Number(pos.positionData.feeX || 0) / Math.pow(10, xDecimals);
+    const yFee = Number(pos.positionData.feeY || 0) / Math.pow(10, yDecimals);
+    const feesEarnedUsd = (xFee * xPrice) + (yFee * yPrice);
+
+    // Since we don't have deposit data, show current value only
+    // Mark PnL as unknown/estimated
+    return {
+      positionId: pos.publicKey.toBase58(),
+      status: 'open',
+      depositValueUsd: currentValueUsd, // Estimated - same as current
+      currentValueUsd,
+      realizedPnlUsd: 0, // Can't calculate without deposit data
+      realizedPnlPercent: 0,
+      impermanentLoss: {
+        usd: 0, // Can't calculate without deposit data
+        percent: 0,
+      },
+      feesEarnedUsd,
+      rewardsEarnedUsd: 0,
+    };
+  };
+
+  // Update PnL for a specific position (called after closing)
+  const updatePnL = (positionId: string, pnl: PositionPnLResult) => {
+    setPnlData(prev => {
+      const newMap = new Map(prev);
+      newMap.set(positionId, pnl);
+      return newMap;
+    });
+  };
+
   // Filter positions when they change
   useEffect(() => {
     const filterBTCPositions = async () => {
@@ -813,12 +1044,258 @@ const WalletPage = () => {
     }
   }, [positions]);
 
+  // Fetch PnL data when filtered positions change
+  useEffect(() => {
+    if (filteredPositions.size > 0) {
+      fetchPnLData(filteredPositions);
+    } else {
+      setPnlData(new Map());
+    }
+  }, [filteredPositions, publicKey]);
+
   const positionsArray = Array.from(filteredPositions.entries());
+
+  // Calculate portfolio-level totals from PnL data
+  const portfolioTotals = React.useMemo(() => {
+    if (pnlData.size === 0) {
+      return {
+        totalPnlUsd: 0,
+        totalPnlPercent: 0,
+        totalFeesEarnedUsd: 0,
+        totalRewardsEarnedUsd: 0,
+        totalImpermanentLossUsd: 0,
+        totalDepositValueUsd: 0,
+        totalCurrentValueUsd: 0,
+        activePositionsCount: 0,
+      };
+    }
+
+    let totalPnlUsd = 0;
+    let totalFeesEarnedUsd = 0;
+    let totalRewardsEarnedUsd = 0;
+    let totalImpermanentLossUsd = 0;
+    let totalDepositValueUsd = 0;
+    let totalCurrentValueUsd = 0;
+
+    for (const pnl of pnlData.values()) {
+      totalPnlUsd += pnl.realizedPnlUsd;
+      totalFeesEarnedUsd += pnl.feesEarnedUsd;
+      totalRewardsEarnedUsd += pnl.rewardsEarnedUsd;
+      totalImpermanentLossUsd += pnl.impermanentLoss.usd;
+      totalDepositValueUsd += pnl.depositValueUsd;
+      totalCurrentValueUsd += pnl.currentValueUsd;
+    }
+
+    const totalPnlPercent = totalDepositValueUsd > 0
+      ? (totalPnlUsd / totalDepositValueUsd) * 100
+      : 0;
+
+    return {
+      totalPnlUsd,
+      totalPnlPercent,
+      totalFeesEarnedUsd,
+      totalRewardsEarnedUsd,
+      totalImpermanentLossUsd,
+      totalDepositValueUsd,
+      totalCurrentValueUsd,
+      activePositionsCount: pnlData.size,
+    };
+  }, [pnlData]);
 
   return (
     <PageTemplate>
       <div className="">
         <div className="mx-auto">
+          {/* Portfolio Performance Summary - Always on top */}
+          {connected && pnlData.size > 0 && (
+            <div className="space-y-4 mb-6">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <h2 className="text-2xl font-bold text-white flex items-center gap-2">
+                    <ChartLineUpIcon size={28} className="text-primary" weight="fill" />
+                    Portfolio Performance
+                  </h2>
+                  {/* User Tier Badge */}
+                  {userTier && (
+                    <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                      userTier.tier === 'premium'
+                        ? 'bg-gradient-to-r from-yellow-500/20 to-orange-500/20 text-yellow-400 border border-yellow-500/30'
+                        : userTier.tier === 'credits'
+                        ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                        : 'bg-gray-700/50 text-gray-400 border border-gray-600'
+                    }`}>
+                      {userTier.tier === 'premium' && '👑 Premium'}
+                      {userTier.tier === 'credits' && `💳 ${userTier.creditBalance} Credits`}
+                      {userTier.tier === 'free' && '🆓 Free'}
+                    </span>
+                  )}
+                </div>
+                {loadingPnl && (
+                  <span className="text-sm text-gray-400">Calculating PnL...</span>
+                )}
+              </div>
+
+              {/* Free User - Upgrade Prompt */}
+              {userTier && !userTier.canAccessFullPnL && (
+                <div className="relative">
+                  {/* Blurred PnL Preview */}
+                  <div className="filter blur-sm pointer-events-none select-none">
+                    <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-6">
+                      <Card className="bg-gray-900/50 border-border">
+                        <CardHeader className="pb-2">
+                          <CardTitle className="text-sm font-medium text-gray-400">Total Value</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="text-2xl font-bold text-white">$XX,XXX.XX</div>
+                          <p className="text-xs text-gray-500 mt-2">Locked</p>
+                        </CardContent>
+                      </Card>
+                      <Card className="bg-gray-900/50 border-border">
+                        <CardHeader className="pb-2">
+                          <CardTitle className="text-sm font-medium text-gray-400">Total PnL</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="text-2xl font-bold text-gray-400">$XXX.XX</div>
+                          <p className="text-xs text-gray-500 mt-2">+XX.XX%</p>
+                        </CardContent>
+                      </Card>
+                      <Card className="bg-gray-900/50 border-border">
+                        <CardHeader className="pb-2">
+                          <CardTitle className="text-sm font-medium text-gray-400">Fees Earned</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="text-2xl font-bold text-gray-400">$XX.XX</div>
+                          <p className="text-xs text-gray-500 mt-2">Locked</p>
+                        </CardContent>
+                      </Card>
+                    </div>
+                  </div>
+
+                  {/* Upgrade Overlay */}
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm rounded-lg">
+                    <div className="text-center p-8 max-w-md">
+                      <div className="text-4xl mb-4">🔒</div>
+                      <h3 className="text-xl font-bold text-white mb-2">Unlock Full PnL Tracking</h3>
+                      <p className="text-gray-400 mb-6">
+                        Get detailed profit & loss analysis, fee tracking, and impermanent loss calculations
+                      </p>
+                      <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                        <Button
+                          className="bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 text-white font-semibold"
+                          onClick={() => {
+                            // TODO: Navigate to subscription page
+                            showToast.info("Coming Soon", "Premium subscription page is under development");
+                          }}
+                        >
+                          👑 Subscribe ($9.99/mo)
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="border-blue-500 text-blue-400 hover:bg-blue-500/10"
+                          onClick={() => {
+                            // TODO: Navigate to credits page
+                            showToast.info("Coming Soon", "Credits purchase page is under development");
+                          }}
+                        >
+                          💳 Buy Credits
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Premium/Credits Users - Full PnL Display */}
+              {userTier && userTier.canAccessFullPnL && (
+                <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-6">
+                  {/* Total Portfolio Value */}
+                  <Card className="bg-gray-900/50 border-border">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-gray-400">Total Value</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold text-white">
+                      ${portfolioTotals.totalCurrentValueUsd.toFixed(2)}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">
+                      Deposited: ${portfolioTotals.totalDepositValueUsd.toFixed(2)}
+                    </p>
+                  </CardContent>
+                </Card>
+
+                {/* Total PnL */}
+                <Card className="bg-gray-900/50 border-border">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-gray-400">Total PnL</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className={`text-2xl font-bold ${portfolioTotals.totalPnlUsd >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                      {portfolioTotals.totalPnlUsd >= 0 ? '+' : ''}${portfolioTotals.totalPnlUsd.toFixed(2)}
+                    </div>
+                    <p className={`text-xs mt-2 ${portfolioTotals.totalPnlPercent >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {portfolioTotals.totalPnlPercent >= 0 ? '+' : ''}{portfolioTotals.totalPnlPercent.toFixed(2)}%
+                    </p>
+                  </CardContent>
+                </Card>
+
+                {/* Total Fees Earned */}
+                <Card className="bg-gray-900/50 border-border">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-gray-400">Fees Earned</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold text-green-500">
+                      ${portfolioTotals.totalFeesEarnedUsd.toFixed(2)}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">Swap fees</p>
+                  </CardContent>
+                </Card>
+
+                {/* Total Rewards - only show if > 0 */}
+                {portfolioTotals.totalRewardsEarnedUsd > 0 && (
+                  <Card className="bg-gray-900/50 border-border">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm font-medium text-gray-400">Rewards</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-2xl font-bold text-green-500">
+                        ${portfolioTotals.totalRewardsEarnedUsd.toFixed(2)}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-2">Trading rewards</p>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Total Impermanent Loss */}
+                <Card className="bg-gray-900/50 border-border">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-gray-400">Impermanent Loss</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className={`text-2xl font-bold ${portfolioTotals.totalImpermanentLossUsd >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                      {portfolioTotals.totalImpermanentLossUsd >= 0 ? '+' : ''}${Math.abs(portfolioTotals.totalImpermanentLossUsd).toFixed(2)}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">vs. HODL</p>
+                  </CardContent>
+                </Card>
+
+                {/* Active Positions */}
+                <Card className="bg-gray-900/50 border-border">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-gray-400">Active Positions</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold text-white">
+                      {portfolioTotals.activePositionsCount}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">BTC pools</p>
+                  </CardContent>
+                </Card>
+              </div>
+              )}
+            </div>
+          )}
+
           {/* Tab Navigation */}
           <div className="flex justify-between items-center mb-6">
             <div className="flex gap-4">
@@ -884,6 +1361,21 @@ const WalletPage = () => {
                   showToast.error("Link Failed", error.message);
                 }}
               />
+
+              {/* Wallet Deletion Section */}
+              {connected && publicKey && (
+                <div className="mt-8">
+                  <WalletDeletionDialog
+                    walletAddress={publicKey.toBase58()}
+                    onDeleteSuccess={() => {
+                      showToast.success("Wallet Deleted", "All wallet data has been removed");
+                    }}
+                    onDeleteError={(error) => {
+                      showToast.error("Deletion Failed", error.message);
+                    }}
+                  />
+                </div>
+              )}
             </div>
           ) : (
             <>
@@ -898,6 +1390,16 @@ const WalletPage = () => {
               <div className="flex items-center space-x-2">
                 <InfoIcon className="w-5 h-5 text-primary" />
                 <span className="text-primary">{error}</span>
+              </div>
+            </div>
+          )}
+
+          {/* PnL Loading Indicator */}
+          {loadingPnl && connected && positionsArray.length > 0 && (
+            <div className="bg-blue-500/10 border border-blue-500 rounded-lg p-3 mb-4">
+              <div className="flex items-center space-x-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
+                <span className="text-blue-500 text-sm">Loading PnL data...</span>
               </div>
             </div>
           )}
@@ -945,7 +1447,7 @@ const WalletPage = () => {
                   <tbody className="border-b border-border">
                     {positionsArray.map(([lbPairAddress, positionInfo]) =>
                       positionInfo.lbPairPositionsData.map(
-                        (_: PositionType, idx: number) => (
+                        (pos: PositionType, idx: number) => (
                           <PositionItem
                             key={`${lbPairAddress}-${idx}`}
                             lbPairAddress={lbPairAddress}
@@ -953,6 +1455,8 @@ const WalletPage = () => {
                             positionIndex={idx}
                             refreshPositions={refreshPositions}
                             viewMode={viewMode}
+                            pnl={pnlData.get(pos.publicKey.toBase58())}
+                            onPnLUpdate={updatePnL}
                           />
                         )
                       )
@@ -964,7 +1468,7 @@ const WalletPage = () => {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {positionsArray.map(([lbPairAddress, positionInfo]) =>
                   positionInfo.lbPairPositionsData.map(
-                    (_: PositionType, idx: number) => (
+                    (pos: PositionType, idx: number) => (
                       <PositionItem
                         key={`${lbPairAddress}-${idx}`}
                         lbPairAddress={lbPairAddress}
@@ -972,6 +1476,8 @@ const WalletPage = () => {
                         positionIndex={idx}
                         refreshPositions={refreshPositions}
                         viewMode={viewMode}
+                        pnl={pnlData.get(pos.publicKey.toBase58())}
+                        onPnLUpdate={updatePnL}
                       />
                     )
                   )

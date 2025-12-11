@@ -71,6 +71,23 @@ export interface UseCreditsResult {
   message: string;
 }
 
+export interface DeleteWalletResult {
+  success: boolean;
+  walletAddress: string;
+  deletedRecords: {
+    userLink: boolean;
+    positionLinks: number;
+    credits: number;
+    subscriptions: number;
+    creditTransactions: number;
+    linkTokens: number;
+    repositionExecutions: number;
+    pendingTransactions: number;
+    botGeneratedWallet: boolean;
+  };
+  message: string;
+}
+
 /**
  * MCP Client for Hypebiscus Garden Bot
  * Communicates with the MCP server via HTTP
@@ -367,6 +384,17 @@ export class MCPClient {
       amount,
       positionAddress,
       description,
+    });
+  }
+
+  /**
+   * Completely delete wallet and all associated data
+   * WARNING: This is a DESTRUCTIVE operation that cannot be undone
+   * @param telegramUserId Telegram user ID to delete wallet for
+   */
+  async deleteWalletCompletely(telegramUserId: string): Promise<DeleteWalletResult> {
+    return this.call<DeleteWalletResult>('delete_wallet_completely', {
+      telegramId: telegramUserId,
     });
   }
 }
