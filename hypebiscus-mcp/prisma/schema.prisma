@@ -9,48 +9,71 @@ datasource db {
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model positions {
-  id                  String    @id
-  userId              String
-  positionId          String    @unique
-  poolAddress         String
-  zbtcAmount          Decimal   @db.Decimal(20, 8)
-  entryPrice          Decimal   @db.Decimal(20, 8)
-  isActive            Boolean   @default(true)
-  createdAt           DateTime  @default(now())
-  lastChecked         DateTime  @default(now())
-  entryBin            Int       @default(0)
-  solAmount           Decimal   @default(0) @db.Decimal(20, 8)
-  zbtcReturned        Decimal?  @db.Decimal(20, 8)
-  solReturned         Decimal?  @db.Decimal(20, 8)
-  exitPrice           Decimal?  @db.Decimal(20, 8)
-  exitBin             Int?
-  zbtcFees            Decimal?  @default(0) @db.Decimal(20, 8)
-  solFees             Decimal?  @default(0) @db.Decimal(20, 8)
-  pnlUsd              Decimal?  @db.Decimal(20, 8)
-  pnlPercent          Decimal?  @db.Decimal(10, 4)
-  closedAt            DateTime? @db.Timestamp(6)
-  source              String    @default("telegram")
-  linkedWalletAddress String?   @map("linked_wallet_address")
-  users               users     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                      String                      @id
+  userId                  String
+  positionId              String                      @unique
+  poolAddress             String
+  zbtcAmount              Decimal                     @db.Decimal(20, 8)
+  entryPrice              Decimal                     @db.Decimal(20, 8)
+  isActive                Boolean                     @default(true)
+  createdAt               DateTime                    @default(now())
+  lastChecked             DateTime                    @default(now())
+  entryBin                Int                         @default(0)
+  solAmount               Decimal                     @default(0) @db.Decimal(20, 8)
+  zbtcReturned            Decimal?                    @db.Decimal(20, 8)
+  solReturned             Decimal?                    @db.Decimal(20, 8)
+  exitPrice               Decimal?                    @db.Decimal(20, 8)
+  exitBin                 Int?
+  zbtcFees                Decimal?                    @default(0) @db.Decimal(20, 8)
+  solFees                 Decimal?                    @default(0) @db.Decimal(20, 8)
+  pnlUsd                  Decimal?                    @db.Decimal(20, 8)
+  pnlPercent              Decimal?                    @db.Decimal(10, 4)
+  closedAt                DateTime?                   @db.Timestamp(6)
+  source                  String                      @default("telegram")
+  linkedWalletAddress     String?                     @map("linked_wallet_address")
+
+  // Enhanced PnL tracking (production-grade)
+  depositValueUsd         Decimal?                    @map("deposit_value_usd") @db.Decimal(20, 8)
+  depositTokenXPrice      Decimal?                    @map("deposit_token_x_price") @db.Decimal(20, 8)
+  depositTokenYPrice      Decimal?                    @map("deposit_token_y_price") @db.Decimal(20, 8)
+  withdrawValueUsd        Decimal?                    @map("withdraw_value_usd") @db.Decimal(20, 8)
+  withdrawTokenXPrice     Decimal?                    @map("withdraw_token_x_price") @db.Decimal(20, 8)
+  withdrawTokenYPrice     Decimal?                    @map("withdraw_token_y_price") @db.Decimal(20, 8)
+  realizedPnlUsd          Decimal?                    @map("realized_pnl_usd") @db.Decimal(20, 8)
+  realizedPnlPercent      Decimal?                    @map("realized_pnl_percent") @db.Decimal(10, 4)
+  impermanentLossUsd      Decimal?                    @map("impermanent_loss_usd") @db.Decimal(20, 8)
+  impermanentLossPercent  Decimal?                    @map("impermanent_loss_percent") @db.Decimal(10, 4)
+  feesEarnedUsd           Decimal?                    @map("fees_earned_usd") @db.Decimal(20, 8)
+  rewardsEarnedUsd        Decimal?                    @default(0) @map("rewards_earned_usd") @db.Decimal(20, 8)
+
+  users                   users                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions            position_transactions[]
 
   @@index([positionId])
   @@index([userId, isActive])
   @@index([source, isActive])
+  @@index([userId, isActive, realizedPnlUsd], map: "idx_positions_pnl_analysis")
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model user_stats {
-  id              String    @id @default(dbgenerated("(gen_random_uuid())::text"))
-  userId          String    @unique
-  totalPositions  Int?      @default(0)
-  activePositions Int?      @default(0)
-  totalZbtcFees   Decimal?  @default(0) @db.Decimal(20, 8)
-  totalSolFees    Decimal?  @default(0) @db.Decimal(20, 8)
-  totalPnlUsd     Decimal?  @default(0) @db.Decimal(20, 8)
-  avgPositionSize Decimal?  @default(0) @db.Decimal(20, 8)
-  avgHoldTime     Int?      @default(0)
-  updatedAt       DateTime? @default(now()) @db.Timestamp(6)
-  users           users     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_user")
+  id                        String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId                    String    @unique
+  totalPositions            Int?      @default(0)
+  activePositions           Int?      @default(0)
+  totalZbtcFees             Decimal?  @default(0) @db.Decimal(20, 8)
+  totalSolFees              Decimal?  @default(0) @db.Decimal(20, 8)
+  totalPnlUsd               Decimal?  @default(0) @db.Decimal(20, 8)
+  avgPositionSize           Decimal?  @default(0) @db.Decimal(20, 8)
+  avgHoldTime               Int?      @default(0)
+
+  // Enhanced PnL tracking aggregates
+  totalImpermanentLossUsd   Decimal?  @default(0) @map("total_impermanent_loss_usd") @db.Decimal(20, 8)
+  totalFeesEarnedUsd        Decimal?  @default(0) @map("total_fees_earned_usd") @db.Decimal(20, 8)
+  totalRewardsEarnedUsd     Decimal?  @default(0) @map("total_rewards_earned_usd") @db.Decimal(20, 8)
+
+  updatedAt                 DateTime? @default(now()) @db.Timestamp(6)
+  users                     users     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_user")
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
@@ -332,4 +355,35 @@ model credit_transactions {
   @@index([walletAddress, createdAt(sort: Desc)], map: "idx_wallet_credit_txs")
   @@index([type, createdAt(sort: Desc)], map: "idx_credit_tx_type")
   @@index([relatedResourceId], map: "idx_credit_tx_resource")
+}
+
+/// Position transaction history for accurate PnL calculation
+model position_transactions {
+  id                String   @id @default(dbgenerated("gen_random_uuid()::text"))
+  positionId        String   @map("position_id")
+  transactionType   String   @map("transaction_type") // 'deposit', 'withdraw', 'fee_claim', 'reward_claim'
+  timestamp         DateTime @default(now())
+  blockHeight       BigInt?  @map("block_height")
+  signature         String?  @unique
+
+  // Token amounts at transaction time
+  tokenXAmount      Decimal  @default(0) @map("token_x_amount") @db.Decimal(20, 8)
+  tokenYAmount      Decimal  @default(0) @map("token_y_amount") @db.Decimal(20, 8)
+
+  // Prices at transaction time
+  tokenXPrice       Decimal  @map("token_x_price") @db.Decimal(20, 8)
+  tokenYPrice       Decimal  @map("token_y_price") @db.Decimal(20, 8)
+
+  // USD value at transaction time
+  usdValue          Decimal  @map("usd_value") @db.Decimal(20, 8)
+
+  // Metadata
+  notes             String?
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  positions         positions @relation(fields: [positionId], references: [positionId], onDelete: Cascade)
+
+  @@index([positionId, transactionType, timestamp(sort: Desc)], map: "idx_position_tx_history")
+  @@index([timestamp(sort: Desc)], map: "idx_tx_timestamp")
+  @@index([signature], map: "idx_tx_signature")
 }

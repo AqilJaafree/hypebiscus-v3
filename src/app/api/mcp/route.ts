@@ -71,7 +71,17 @@ export async function POST(request: NextRequest) {
     });
 
     if (!mcpResponse.ok) {
-      throw new Error(`MCP server returned ${mcpResponse.status}`);
+      // Try to get error details from response
+      let errorDetails = `MCP server returned ${mcpResponse.status}`;
+      try {
+        const errorBody = await mcpResponse.json();
+        errorDetails += `: ${JSON.stringify(errorBody)}`;
+      } catch {
+        const errorText = await mcpResponse.text();
+        errorDetails += `: ${errorText}`;
+      }
+      console.error('MCP server error:', errorDetails);
+      throw new Error(errorDetails);
     }
 
     const mcpData = await mcpResponse.json();
@@ -342,6 +352,43 @@ export async function GET() {
               poolAddress: { type: 'string' }
             },
             required: ['positionAddress']
+          }
+        },
+        {
+          name: 'calculate_position_pnl',
+          description: 'Calculate PnL for a specific position',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              positionId: { type: 'string' }
+            },
+            required: ['positionId']
+          }
+        },
+        {
+          name: 'close_position',
+          description: 'Close position and calculate final PnL',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              positionId: { type: 'string' },
+              walletAddress: { type: 'string' },
+              closeOnBlockchain: { type: 'boolean' },
+              transactionSignature: { type: 'string' }
+            },
+            required: ['positionId', 'walletAddress']
+          }
+        },
+        {
+          name: 'get_wallet_pnl',
+          description: 'Get wallet-level aggregated PnL',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              walletAddress: { type: 'string' },
+              includeClosedPositions: { type: 'boolean' }
+            },
+            required: ['walletAddress']
           }
         }
       ];

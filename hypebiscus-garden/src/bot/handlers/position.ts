@@ -1,9 +1,8 @@
 import { Context } from 'telegraf';
-import { Position } from '@prisma/client';
 import { DlmmService } from '../../services/dlmmService';
 import { WalletService } from '../../services/walletService';
 import { MonitoringService } from '../../services/monitoringService';
-import { getOrCreateUser, getActivePositions, getClosedPositions, getPositionStats, createPosition, updateUserMonitoring, closePositionWithTracking } from '../../services/db';
+import { getOrCreateUser, getActivePositions, getClosedPositions, getPositionStats, updateUserMonitoring } from '../../services/db';
 import { backKeyboard } from '../keyboards';
 
 export class PositionHandler {
@@ -108,24 +107,49 @@ export class PositionHandler {
 
       await ctx.reply('🔄 Creating position... This may take a moment.');
 
+      // Step 1: Create position on blockchain
       const positionId = await this.dlmmService.createPosition(userKeypair, zbtcAmount);
       const poolStatus = await this.dlmmService.getPoolStatus();
 
-      await createPosition(
+      // Step 2: Fetch actual deposited amounts from blockchain
+      console.log('📊 Fetching actual position amounts from blockchain...');
+      const { fetchPositionAmounts, fetchTokenPrices } = await import('../../utils/priceUtils');
+
+      await this.dlmmService.initializePool();
+      const pool = (this.dlmmService as any).pool;
+
+      const actualAmounts = await fetchPositionAmounts(pool, positionId);
+
+      // Step 3: Fetch token prices at creation time (with fallback to pool price)
+      console.log('💰 Fetching token prices...');
+      const { zbtcPrice, solPrice } = await fetchTokenPrices(3, poolStatus.currentPrice);
+
+      // Step 4: Create position with enhanced PnL tracking
+      const { createPositionWithEnhancedTracking } = await import('../../services/db');
+      await createPositionWithEnhancedTracking(
         user.id,
         positionId,
         process.env.ZBTC_SOL_POOL_ADDRESS!,
-        zbtcAmount,
-        poolStatus.currentPrice
+        actualAmounts.zbtcAmount,
+        actualAmounts.solAmount,
+        zbtcPrice,
+        solPrice,
+        poolStatus.currentPrice,
+        poolStatus.activeBinId
       );
 
       if (!user.isMonitoring) {
         await updateUserMonitoring(user.id, true);
       }
 
+      const depositValueUsd = (actualAmounts.zbtcAmount * zbtcPrice) + (actualAmounts.solAmount * solPrice);
+
       await ctx.reply(
         `✅ **Position Created!**\n\n` +
-        `💰 Amount: ${zbtcAmount} ZBTC\n` +
+        `💰 Deposited:\n` +
+        `  ${actualAmounts.zbtcAmount.toFixed(8)} zBTC\n` +
+        `  ${actualAmounts.solAmount.toFixed(4)} SOL\n` +
+        `💵 Value: $${depositValueUsd.toFixed(2)}\n\n` +
         `🆔 Position ID: \`${positionId.substring(0, 8)}...\`\n` +
         `📊 Entry Price: $${poolStatus.currentPrice.toFixed(6)}\n` +
         `🔄 Monitoring started automatically`,
@@ -135,6 +159,58 @@ export class PositionHandler {
       console.log(`✅ Position created for user ${telegramId}: ${positionId}`);
     } catch (error: any) {
       console.error('Error creating position:', error);
+
+      // Check for insufficient SOL balance error
+      // Pattern: "insufficient lamports X, need Y"
+      const insufficientLamportsPattern = /insufficient lamports (\d+),?\s*need (\d+)/i;
+      let match = null;
+
+      // Method 1: Check error message string directly
+      const errorMsg = error.message || '';
+      match = errorMsg.match(insufficientLamportsPattern);
+
+      // Method 2: Check transactionLogs array
+      if (!match) {
+        const errorLogs = error.transactionLogs || error.logs || [];
+        if (Array.isArray(errorLogs)) {
+          for (const log of errorLogs) {
+            if (typeof log === 'string') {
+              match = log.match(insufficientLamportsPattern);
+              if (match) break;
+            }
+          }
+        }
+      }
+
+      // Method 3: Check if error was stringified (sometimes happens with nested errors)
+      if (!match) {
+        const errorStr = JSON.stringify(error);
+        match = errorStr.match(insufficientLamportsPattern);
+      }
+
+      // If we found insufficient lamports error, show user-friendly message
+      if (match) {
+        const currentLamports = parseInt(match[1]);
+        const requiredLamports = parseInt(match[2]);
+        const currentSol = currentLamports / 1_000_000_000;
+        const requiredSol = requiredLamports / 1_000_000_000;
+        const neededSol = (requiredLamports - currentLamports) / 1_000_000_000;
+
+        console.log(`💡 Detected insufficient SOL: current=${currentSol.toFixed(4)}, needed=${neededSol.toFixed(4)}`);
+
+        await ctx.reply(
+          `⚠️ **Insufficient SOL Balance**\n\n` +
+          `Your wallet doesn't have enough SOL for this transaction.\n\n` +
+          `💰 Current: ${currentSol.toFixed(4)} SOL\n` +
+          `💳 Required: ${requiredSol.toFixed(4)} SOL\n` +
+          `📥 Need: ${neededSol.toFixed(4)} SOL more\n\n` +
+          `Please fund your wallet with SOL and try again.`,
+          { parse_mode: 'Markdown' }
+        );
+        return;
+      }
+
+      // Generic error fallback
       await ctx.reply(`❌ Failed to create position: ${error.message}`);
     }
   }
@@ -315,7 +391,7 @@ export class PositionHandler {
       }
 
       const { Markup } = await import('telegraf');
-      const buttons = activePositions.map((pos: Position, index: number) => {
+      const buttons = activePositions.map((pos, index) => {
         return [
           Markup.button.callback(
             `Close Position ${index + 1}: ${Number(pos.zbtcAmount).toFixed(6)} ZBTC`,
@@ -357,7 +433,7 @@ export class PositionHandler {
       );
 
       const positions = await getActivePositions(user.id);
-      const position = positions.find((p: Position) => p.positionId === positionId);
+      const position = positions.find(p => p.positionId === positionId);
 
       if (!position) {
         await ctx.editMessageText(
@@ -417,33 +493,79 @@ export class PositionHandler {
       }
 
       const positions = await getActivePositions(user.id);
-      const position = positions.find((p: Position) => p.positionId === positionId);
+      const position = positions.find(p => p.positionId === positionId);
 
       if (!position) {
         throw new Error('Position not found');
       }
 
-      const poolStatus = await this.dlmmService.getPoolStatus();
+      /**
+       * POSITION CLOSING FLOW (Garden Bot + MCP Integration)
+       * =====================================================
+       *
+       * The flow is split between Garden Bot and MCP Server:
+       *
+       * GARDEN BOT (this code):
+       * - Step 1: Close position on Solana blockchain via Meteora DLMM SDK
+       *   - Removes 100% liquidity from all bins
+       *   - Claims accumulated swap fees
+       *   - Closes position account on-chain
+       *   - Returns tokens to user's wallet
+       *
+       * MCP SERVER (remote):
+       * - Step 2: Calculate production-grade PnL using:
+       *   - Deposit prices (from database, recorded at creation)
+       *   - Current prices (from Jupiter/Birdeye APIs)
+       *   - Fees earned (from blockchain + database)
+       *   - Rewards earned (from blockchain)
+       * - Step 3: Update database with final PnL values
+       * - Step 4: Return structured PnL data to display to user
+       *
+       * Why separate?
+       * - Blockchain ops require user's private key (Garden Bot has it)
+       * - PnL calculation requires accurate price data (MCP has better APIs)
+       * - Database updates centralized in one place (MCP manages data layer)
+       * - MCP can be reused by web app, other bots, analytics, etc.
+       */
 
+      // Step 1: Close position on blockchain (Garden Bot handles this)
+      console.log('🔴 Closing position on blockchain...');
       await this.dlmmService.closePosition(userKeypair, positionId);
 
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Wait for blockchain confirmation (tx needs time to finalize)
+      await new Promise(resolve => setTimeout(resolve, 3000));
 
-      const zbtcReturned = Number(position.zbtcAmount);
-      const solReturned = Number(position.solAmount);
+      // Step 2: Call MCP server to calculate PnL and update database
+      // Note: MCP does NOT touch blockchain - position is already closed above
+      console.log('📊 Calling MCP server for PnL calculation...');
+      console.log('📝 Position ID:', positionId);
+      console.log('📝 Wallet Address:', user.wallet!.publicKey);
 
-      await closePositionWithTracking(
+      const { mcpClient } = await import('../../services/mcpClient');
+
+      // This calls MCP's close_position tool with closeOnBlockchain=false
+      // MCP will: fetch current prices, calculate PnL, update database, return results
+      const result = await mcpClient.closePosition(
         positionId,
-        zbtcReturned,
-        solReturned,
-        poolStatus.currentPrice,
-        poolStatus.activeBinId
+        user.wallet!.publicKey
+        // transactionSignature is optional, we don't have it from closePosition
       );
+
+      // Step 3: Display enhanced PnL breakdown
+      const pnl = result.pnl;
+      const pnlSign = pnl.realizedPnlUsd >= 0 ? '+' : '';
+      const pnlEmoji = pnl.realizedPnlUsd >= 0 ? '📈' : '📉';
+      const ilEmoji = pnl.impermanentLoss.usd > 0 ? '⚠️' : '✅';
 
       await ctx.editMessageText(
         `✅ **Position Closed Successfully!**\n\n` +
-        `💰 Returned: ${zbtcReturned.toFixed(6)} ZBTC + ${solReturned.toFixed(4)} SOL\n` +
-        `📊 Exit Price: $${poolStatus.currentPrice.toFixed(2)}\n\n` +
+        `${pnlEmoji} **PnL:** ${pnlSign}$${pnl.realizedPnlUsd.toFixed(2)} (${pnlSign}${pnl.realizedPnlPercent.toFixed(2)}%)\n\n` +
+        `💰 **Withdrawn:**\n` +
+        `  ${pnl.current.tokenX.amount.toFixed(8)} zBTC\n` +
+        `  ${pnl.current.tokenY.amount.toFixed(4)} SOL\n` +
+        `  Value: $${pnl.currentValueUsd.toFixed(2)}\n\n` +
+        `💸 **Fees Earned:** $${pnl.feesEarnedUsd.toFixed(2)}\n` +
+        `${ilEmoji} **Impermanent Loss:** $${pnl.impermanentLoss.usd.toFixed(2)} (${pnl.impermanentLoss.percent.toFixed(2)}%)\n\n` +
         `Your funds are now in your wallet.`,
         {
           parse_mode: 'Markdown',
@@ -451,15 +573,34 @@ export class PositionHandler {
         }
       );
 
-      console.log(`✅ Position closed manually by user ${telegramId}: ${positionId}`);
+      console.log(`✅ Position closed via MCP: ${positionId}, PnL: $${pnl.realizedPnlUsd.toFixed(2)}`);
     } catch (error: any) {
       console.error('Error closing position:', error);
-      await ctx.editMessageText(
-        `❌ **Failed to close position**\n\n` +
-        `Error: ${error.message}\n\n` +
-        `Please try again or contact support.`,
-        backKeyboard
-      );
+
+      // Detect network-related errors
+      const isNetworkError = error.message?.includes('fetch failed') ||
+                            error.message?.includes('ENOTFOUND') ||
+                            error.message?.includes('ETIMEDOUT') ||
+                            error.message?.includes('ECONNREFUSED');
+
+      let errorMsg = `❌ **Failed to close position**\n\n`;
+
+      if (isNetworkError) {
+        errorMsg += `⚠️ **Network connectivity issue detected**\n\n` +
+                   `Unable to connect to Solana RPC endpoint.\n` +
+                   `This may be due to:\n` +
+                   `• DNS resolution problems\n` +
+                   `• Network firewall blocking connections\n` +
+                   `• RPC endpoint temporarily unavailable\n\n` +
+                   `**Tip:** Position may have been created successfully.\n` +
+                   `Try waiting 10-30 seconds before closing.\n\n` +
+                   `If the issue persists, check your network connection.`;
+      } else {
+        errorMsg += `Error: ${error.message}\n\n` +
+                   `Please try again or contact support.`;
+      }
+
+      await ctx.editMessageText(errorMsg, backKeyboard);
     }
   }
 }
