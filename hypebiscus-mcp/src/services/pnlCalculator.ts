@@ -317,14 +317,23 @@ async function calculateFees(
 
 /**
  * Calculate rewards (most DLMM pools don't have active rewards yet)
+ *
+ * @note Currently returns empty array as most DLMM pools don't have active rewards.
+ *
+ * Future implementation requirements when Meteora activates reward programs:
+ * 1. Query reward accounts from DLMM pool
+ * 2. Fetch unclaimed reward amounts using Meteora SDK
+ * 3. Get reward token prices from price API
+ * 4. Calculate USD values for rewards
+ * 5. Track historical claims in position_transactions table
  */
 async function calculateRewards(
   _connection: Connection,
   _positionId: string,
   _isOpen: boolean
 ): Promise<RewardInfo[]> {
-  // TODO: Implement Meteora rewards tracking when pools have active reward programs
-  // For now, most DLMM pools don't have rewards, so return empty array
+  // Most DLMM pools don't have active reward programs as of 2025
+  // This function stub is ready for future implementation
   return [];
 }
 

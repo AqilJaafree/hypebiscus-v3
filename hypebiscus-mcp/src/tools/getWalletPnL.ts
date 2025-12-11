@@ -6,7 +6,12 @@ import { validateSolanaAddress } from '../utils/validation.js';
 import { withErrorHandling, formatError } from '../utils/errors.js';
 import { withCache } from '../utils/cache.js';
 import { calculatePositionPnL } from '../services/pnlCalculator.js';
-import type { WalletPnLResult, PositionPnLResult } from '../types/pnl.js';
+import type {
+  WalletPnLResult,
+  PositionPnLResult,
+  PositionSnapshot,
+  FeesBreakdown,
+} from '../types/pnl.js';
 import { DatabaseError, DatabaseErrorType } from '../types/database.js';
 
 export interface GetWalletPnLInput {
@@ -191,79 +196,135 @@ export async function getWalletPnL_tool(input: GetWalletPnLInput): Promise<Walle
  * Create fallback PnL result from DB values when blockchain calculation fails
  */
 function createFallbackPnL(dbPosition: any): PositionPnLResult {
-  const depositValueUsd = Number(dbPosition.depositValueUsd || 0);
-  const currentValueUsd = Number(dbPosition.withdrawValueUsd || depositValueUsd);
-  const realizedPnlUsd = Number(dbPosition.realizedPnlUsd || dbPosition.pnlUsd || 0);
-  const realizedPnlPercent = Number(dbPosition.realizedPnlPercent || dbPosition.pnlPercent || 0);
-  const impermanentLossUsd = Number(dbPosition.impermanentLossUsd || 0);
-  const impermanentLossPercent = Number(dbPosition.impermanentLossPercent || 0);
-  const feesEarnedUsd = Number(dbPosition.feesEarnedUsd || 0);
-  const rewardsEarnedUsd = Number(dbPosition.rewardsEarnedUsd || 0);
-
-  const depositTokenXPrice = Number(dbPosition.depositTokenXPrice || dbPosition.entryPrice || 0);
-  const depositTokenYPrice = Number(dbPosition.depositTokenYPrice || 0);
-  const withdrawTokenXPrice = Number(
-    dbPosition.withdrawTokenXPrice || dbPosition.exitPrice || depositTokenXPrice
-  );
-  const withdrawTokenYPrice = Number(dbPosition.withdrawTokenYPrice || depositTokenYPrice);
-
-  const tokenXAmount = Number(dbPosition.zbtcAmount);
-  const tokenYAmount = Number(dbPosition.solAmount);
-  const tokenXReturned = Number(dbPosition.zbtcReturned || tokenXAmount);
-  const tokenYReturned = Number(dbPosition.solReturned || tokenYAmount);
+  const pnlMetrics = extractPnLMetrics(dbPosition);
+  const priceData = extractPriceData(dbPosition);
+  const tokenAmounts = extractTokenAmounts(dbPosition);
 
   return {
     positionId: dbPosition.positionId,
     status: dbPosition.isActive ? 'open' : 'closed',
+    ...pnlMetrics,
+    deposit: createDepositSnapshot(tokenAmounts, priceData, dbPosition.createdAt),
+    current: createCurrentSnapshot(tokenAmounts, priceData, dbPosition.closedAt),
+    fees: createFeesBreakdown(dbPosition, pnlMetrics.feesEarnedUsd),
+    rewards: [],
+  };
+}
+
+/**
+ * Extract PnL metrics from database position
+ */
+function extractPnLMetrics(dbPosition: any) {
+  const depositValueUsd = Number(dbPosition.depositValueUsd || 0);
+  const feesEarnedUsd = Number(dbPosition.feesEarnedUsd || 0);
+
+  return {
     depositValueUsd,
-    currentValueUsd,
-    realizedPnlUsd,
-    realizedPnlPercent,
+    currentValueUsd: Number(dbPosition.withdrawValueUsd || depositValueUsd),
+    realizedPnlUsd: Number(dbPosition.realizedPnlUsd || dbPosition.pnlUsd || 0),
+    realizedPnlPercent: Number(dbPosition.realizedPnlPercent || dbPosition.pnlPercent || 0),
     impermanentLoss: {
-      usd: impermanentLossUsd,
-      percent: impermanentLossPercent,
+      usd: Number(dbPosition.impermanentLossUsd || 0),
+      percent: Number(dbPosition.impermanentLossPercent || 0),
     },
     feesEarnedUsd,
-    rewardsEarnedUsd,
-    deposit: {
-      tokenX: {
-        amount: tokenXAmount,
-        price: depositTokenXPrice,
-        usdValue: tokenXAmount * depositTokenXPrice,
-      },
-      tokenY: {
-        amount: tokenYAmount,
-        price: depositTokenYPrice,
-        usdValue: tokenYAmount * depositTokenYPrice,
-      },
-      timestamp: dbPosition.createdAt.toISOString(),
+    rewardsEarnedUsd: Number(dbPosition.rewardsEarnedUsd || 0),
+  };
+}
+
+/**
+ * Extract price data from database position
+ */
+function extractPriceData(dbPosition: any) {
+  const depositTokenXPrice = Number(dbPosition.depositTokenXPrice || dbPosition.entryPrice || 0);
+  const depositTokenYPrice = Number(dbPosition.depositTokenYPrice || 0);
+
+  return {
+    depositTokenXPrice,
+    depositTokenYPrice,
+    withdrawTokenXPrice: Number(
+      dbPosition.withdrawTokenXPrice || dbPosition.exitPrice || depositTokenXPrice
+    ),
+    withdrawTokenYPrice: Number(dbPosition.withdrawTokenYPrice || depositTokenYPrice),
+  };
+}
+
+/**
+ * Extract token amounts from database position
+ */
+function extractTokenAmounts(dbPosition: any) {
+  const tokenXAmount = Number(dbPosition.zbtcAmount);
+  const tokenYAmount = Number(dbPosition.solAmount);
+
+  return {
+    tokenXAmount,
+    tokenYAmount,
+    tokenXReturned: Number(dbPosition.zbtcReturned || tokenXAmount),
+    tokenYReturned: Number(dbPosition.solReturned || tokenYAmount),
+  };
+}
+
+/**
+ * Create deposit snapshot for PnL result
+ */
+function createDepositSnapshot(
+  tokenAmounts: ReturnType<typeof extractTokenAmounts>,
+  priceData: ReturnType<typeof extractPriceData>,
+  createdAt: Date
+): PositionSnapshot {
+  return {
+    tokenX: {
+      amount: tokenAmounts.tokenXAmount,
+      price: priceData.depositTokenXPrice,
+      usdValue: tokenAmounts.tokenXAmount * priceData.depositTokenXPrice,
     },
-    current: {
-      tokenX: {
-        amount: tokenXReturned,
-        price: withdrawTokenXPrice,
-        usdValue: tokenXReturned * withdrawTokenXPrice,
-      },
-      tokenY: {
-        amount: tokenYReturned,
-        price: withdrawTokenYPrice,
-        usdValue: tokenYReturned * withdrawTokenYPrice,
-      },
-      timestamp: dbPosition.closedAt?.toISOString() || new Date().toISOString(),
+    tokenY: {
+      amount: tokenAmounts.tokenYAmount,
+      price: priceData.depositTokenYPrice,
+      usdValue: tokenAmounts.tokenYAmount * priceData.depositTokenYPrice,
     },
-    fees: {
-      tokenX: {
-        amount: Number(dbPosition.zbtcFees || 0),
-        claimedUsd: 0,
-        unclaimedUsd: feesEarnedUsd / 2, // Approximate split
-      },
-      tokenY: {
-        amount: Number(dbPosition.solFees || 0),
-        claimedUsd: 0,
-        unclaimedUsd: feesEarnedUsd / 2, // Approximate split
-      },
+    timestamp: createdAt.toISOString(),
+  };
+}
+
+/**
+ * Create current snapshot for PnL result
+ */
+function createCurrentSnapshot(
+  tokenAmounts: ReturnType<typeof extractTokenAmounts>,
+  priceData: ReturnType<typeof extractPriceData>,
+  closedAt: Date | null
+): PositionSnapshot {
+  return {
+    tokenX: {
+      amount: tokenAmounts.tokenXReturned,
+      price: priceData.withdrawTokenXPrice,
+      usdValue: tokenAmounts.tokenXReturned * priceData.withdrawTokenXPrice,
     },
-    rewards: [],
+    tokenY: {
+      amount: tokenAmounts.tokenYReturned,
+      price: priceData.withdrawTokenYPrice,
+      usdValue: tokenAmounts.tokenYReturned * priceData.withdrawTokenYPrice,
+    },
+    timestamp: closedAt?.toISOString() || new Date().toISOString(),
+  };
+}
+
+/**
+ * Create fees breakdown for PnL result
+ */
+function createFeesBreakdown(dbPosition: any, feesEarnedUsd: number): FeesBreakdown {
+  return {
+    tokenX: {
+      amount: Number(dbPosition.zbtcFees || 0),
+      claimedUsd: 0,
+      unclaimedUsd: feesEarnedUsd / 2, // Approximate split
+    },
+    tokenY: {
+      amount: Number(dbPosition.solFees || 0),
+      claimedUsd: 0,
+      unclaimedUsd: feesEarnedUsd / 2, // Approximate split
+    },
   };
 }
 
