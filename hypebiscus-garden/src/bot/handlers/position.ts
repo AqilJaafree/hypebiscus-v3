@@ -58,161 +58,209 @@ export class PositionHandler {
     const telegramId = ctx.from?.id;
     if (!telegramId) return;
 
-    const zbtcAmount = parseFloat(amount);
-    if (isNaN(zbtcAmount) || zbtcAmount <= 0) {
+    const zbtcAmount = this.parseAndValidateAmount(amount);
+    if (!zbtcAmount) {
       await ctx.reply('❌ Invalid amount. Please enter a positive number.');
       return;
     }
 
     try {
-      const user = await getOrCreateUser(
-        telegramId,
-        ctx.from?.username,
-        ctx.from?.first_name,
-        ctx.from?.last_name
-      );
+      const user = await this.getUserAndKeypair(telegramId, ctx);
+      if (!user) return;
 
-      const userKeypair = await this.walletService.getKeypair(user.id);
-      if (!userKeypair) {
-        throw new Error('Keypair not found');
-      }
-
-      const balance = await this.walletService.getBalance(user.id);
-      if (!balance) {
-        await ctx.reply('❌ Failed to get wallet balance. Please try again.');
-        return;
-      }
-
-      if (balance.zbtc < zbtcAmount) {
-        await ctx.reply(
-          `❌ **Insufficient ZBTC Balance**\n\n` +
-          `Required: ${zbtcAmount.toFixed(8)} ZBTC\n` +
-          `Available: ${balance.zbtc.toFixed(8)} ZBTC\n\n` +
-          `Please fund your wallet or try a smaller amount.`,
-          { parse_mode: 'Markdown' }
-        );
-        return;
-      }
-
-      if (balance.sol < 0.01) {
-        await ctx.reply(
-          `⚠️ **Low SOL Balance**\n\n` +
-          `Current: ${balance.sol.toFixed(4)} SOL\n` +
-          `Recommended: At least 0.01 SOL for transaction fees\n\n` +
-          `Please fund your wallet with SOL.`,
-          { parse_mode: 'Markdown' }
-        );
+      const validationResult = await this.validateUserBalance(user.id, zbtcAmount);
+      if (!validationResult.isValid) {
+        await ctx.reply(validationResult.message!, { parse_mode: 'Markdown' });
         return;
       }
 
       await ctx.reply('🔄 Creating position... This may take a moment.');
 
-      // Step 1: Create position on blockchain
-      const positionId = await this.dlmmService.createPosition(userKeypair, zbtcAmount);
-      const poolStatus = await this.dlmmService.getPoolStatus();
-
-      // Step 2: Fetch actual deposited amounts from blockchain
-      console.log('📊 Fetching actual position amounts from blockchain...');
-      const { fetchPositionAmounts, fetchTokenPrices } = await import('../../utils/priceUtils');
-
-      await this.dlmmService.initializePool();
-      const pool = (this.dlmmService as any).pool;
-
-      const actualAmounts = await fetchPositionAmounts(pool, positionId);
-
-      // Step 3: Fetch token prices at creation time (with fallback to pool price)
-      console.log('💰 Fetching token prices...');
-      const { zbtcPrice, solPrice } = await fetchTokenPrices(3, poolStatus.currentPrice);
-
-      // Step 4: Create position with enhanced PnL tracking
-      const { createPositionWithEnhancedTracking } = await import('../../services/db');
-      await createPositionWithEnhancedTracking(
-        user.id,
-        positionId,
-        process.env.ZBTC_SOL_POOL_ADDRESS!,
-        actualAmounts.zbtcAmount,
-        actualAmounts.solAmount,
-        zbtcPrice,
-        solPrice,
-        poolStatus.currentPrice,
-        poolStatus.activeBinId
-      );
+      const positionData = await this.createBlockchainPosition(user.keypair, zbtcAmount);
+      await this.savePositionToDatabase(user.id, positionData);
 
       if (!user.isMonitoring) {
         await updateUserMonitoring(user.id, true);
       }
 
-      const depositValueUsd = (actualAmounts.zbtcAmount * zbtcPrice) + (actualAmounts.solAmount * solPrice);
-
-      await ctx.reply(
-        `✅ **Position Created!**\n\n` +
-        `💰 Deposited:\n` +
-        `  ${actualAmounts.zbtcAmount.toFixed(8)} zBTC\n` +
-        `  ${actualAmounts.solAmount.toFixed(4)} SOL\n` +
-        `💵 Value: $${depositValueUsd.toFixed(2)}\n\n` +
-        `🆔 Position ID: \`${positionId.substring(0, 8)}...\`\n` +
-        `📊 Entry Price: $${poolStatus.currentPrice.toFixed(6)}\n` +
-        `🔄 Monitoring started automatically`,
-        { parse_mode: 'Markdown' }
-      );
-
-      console.log(`✅ Position created for user ${telegramId}: ${positionId}`);
+      await this.sendPositionCreatedMessage(ctx, positionData);
+      console.log(`✅ Position created for user ${telegramId}: ${positionData.positionId}`);
     } catch (error: any) {
       console.error('Error creating position:', error);
+      await this.handlePositionCreationError(ctx, error);
+    }
+  }
 
-      // Check for insufficient SOL balance error
-      // Pattern: "insufficient lamports X, need Y"
-      const insufficientLamportsPattern = /insufficient lamports (\d+),?\s*need (\d+)/i;
-      let match = null;
+  private parseAndValidateAmount(amount: string): number | null {
+    const parsed = parseFloat(amount);
+    return (isNaN(parsed) || parsed <= 0) ? null : parsed;
+  }
 
-      // Method 1: Check error message string directly
-      const errorMsg = error.message || '';
-      match = errorMsg.match(insufficientLamportsPattern);
+  private async getUserAndKeypair(telegramId: number, ctx: Context) {
+    const user = await getOrCreateUser(
+      telegramId,
+      ctx.from?.username,
+      ctx.from?.first_name,
+      ctx.from?.last_name
+    );
 
-      // Method 2: Check transactionLogs array
-      if (!match) {
-        const errorLogs = error.transactionLogs || error.logs || [];
-        if (Array.isArray(errorLogs)) {
-          for (const log of errorLogs) {
-            if (typeof log === 'string') {
-              match = log.match(insufficientLamportsPattern);
-              if (match) break;
-            }
-          }
+    const userKeypair = await this.walletService.getKeypair(user.id);
+    if (!userKeypair) {
+      throw new Error('Keypair not found');
+    }
+
+    return { id: user.id, keypair: userKeypair, isMonitoring: user.isMonitoring };
+  }
+
+  private async validateUserBalance(userId: string, zbtcAmount: number) {
+    const balance = await this.walletService.getBalance(userId);
+    if (!balance) {
+      return {
+        isValid: false,
+        message: '❌ Failed to get wallet balance. Please try again.'
+      };
+    }
+
+    if (balance.zbtc < zbtcAmount) {
+      return {
+        isValid: false,
+        message:
+          `❌ **Insufficient ZBTC Balance**\n\n` +
+          `Required: ${zbtcAmount.toFixed(8)} ZBTC\n` +
+          `Available: ${balance.zbtc.toFixed(8)} ZBTC\n\n` +
+          `Please fund your wallet or try a smaller amount.`
+      };
+    }
+
+    if (balance.sol < 0.01) {
+      return {
+        isValid: false,
+        message:
+          `⚠️ **Low SOL Balance**\n\n` +
+          `Current: ${balance.sol.toFixed(4)} SOL\n` +
+          `Recommended: At least 0.01 SOL for transaction fees\n\n` +
+          `Please fund your wallet with SOL.`
+      };
+    }
+
+    return { isValid: true };
+  }
+
+  private async createBlockchainPosition(userKeypair: any, zbtcAmount: number) {
+    const positionId = await this.dlmmService.createPosition(userKeypair, zbtcAmount);
+    const poolStatus = await this.dlmmService.getPoolStatus();
+
+    console.log('📊 Fetching actual position amounts from blockchain...');
+    const { fetchPositionAmounts, fetchTokenPrices } = await import('../../utils/priceUtils');
+
+    await this.dlmmService.initializePool();
+    const pool = (this.dlmmService as any).pool;
+
+    const actualAmounts = await fetchPositionAmounts(pool, positionId);
+
+    console.log('💰 Fetching token prices...');
+    const { zbtcPrice, solPrice } = await fetchTokenPrices(3, poolStatus.currentPrice);
+
+    const depositValueUsd = (actualAmounts.zbtcAmount * zbtcPrice) + (actualAmounts.solAmount * solPrice);
+
+    return {
+      positionId,
+      poolStatus,
+      actualAmounts,
+      zbtcPrice,
+      solPrice,
+      depositValueUsd
+    };
+  }
+
+  private async savePositionToDatabase(userId: string, positionData: any) {
+    const { createPositionWithEnhancedTracking } = await import('../../services/db');
+    await createPositionWithEnhancedTracking(
+      userId,
+      positionData.positionId,
+      process.env.ZBTC_SOL_POOL_ADDRESS!,
+      positionData.actualAmounts.zbtcAmount,
+      positionData.actualAmounts.solAmount,
+      positionData.zbtcPrice,
+      positionData.solPrice,
+      positionData.poolStatus.currentPrice,
+      positionData.poolStatus.activeBinId
+    );
+  }
+
+  private async sendPositionCreatedMessage(ctx: Context, positionData: any) {
+    await ctx.reply(
+      `✅ **Position Created!**\n\n` +
+      `💰 Deposited:\n` +
+      `  ${positionData.actualAmounts.zbtcAmount.toFixed(8)} zBTC\n` +
+      `  ${positionData.actualAmounts.solAmount.toFixed(4)} SOL\n` +
+      `💵 Value: $${positionData.depositValueUsd.toFixed(2)}\n\n` +
+      `🆔 Position ID: \`${positionData.positionId.substring(0, 8)}...\`\n` +
+      `📊 Entry Price: $${positionData.poolStatus.currentPrice.toFixed(6)}\n` +
+      `🔄 Monitoring started automatically`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  private async handlePositionCreationError(ctx: Context, error: any) {
+    const insufficientSolError = this.parseInsufficientSolError(error);
+
+    if (insufficientSolError) {
+      await ctx.reply(this.formatInsufficientSolMessage(insufficientSolError), { parse_mode: 'Markdown' });
+      return;
+    }
+
+    await ctx.reply(`❌ Failed to create position: ${error.message}`);
+  }
+
+  private parseInsufficientSolError(error: any) {
+    const insufficientLamportsPattern = /insufficient lamports (\d+),?\s*need (\d+)/i;
+
+    // Method 1: Check error message directly
+    const errorMsg = error.message || '';
+    let match = errorMsg.match(insufficientLamportsPattern);
+    if (match) return this.parseLamportsMatch(match);
+
+    // Method 2: Check transaction logs
+    const errorLogs = error.transactionLogs || error.logs || [];
+    if (Array.isArray(errorLogs)) {
+      for (const log of errorLogs) {
+        if (typeof log === 'string') {
+          match = log.match(insufficientLamportsPattern);
+          if (match) return this.parseLamportsMatch(match);
         }
       }
-
-      // Method 3: Check if error was stringified (sometimes happens with nested errors)
-      if (!match) {
-        const errorStr = JSON.stringify(error);
-        match = errorStr.match(insufficientLamportsPattern);
-      }
-
-      // If we found insufficient lamports error, show user-friendly message
-      if (match) {
-        const currentLamports = parseInt(match[1]);
-        const requiredLamports = parseInt(match[2]);
-        const currentSol = currentLamports / 1_000_000_000;
-        const requiredSol = requiredLamports / 1_000_000_000;
-        const neededSol = (requiredLamports - currentLamports) / 1_000_000_000;
-
-        console.log(`💡 Detected insufficient SOL: current=${currentSol.toFixed(4)}, needed=${neededSol.toFixed(4)}`);
-
-        await ctx.reply(
-          `⚠️ **Insufficient SOL Balance**\n\n` +
-          `Your wallet doesn't have enough SOL for this transaction.\n\n` +
-          `💰 Current: ${currentSol.toFixed(4)} SOL\n` +
-          `💳 Required: ${requiredSol.toFixed(4)} SOL\n` +
-          `📥 Need: ${neededSol.toFixed(4)} SOL more\n\n` +
-          `Please fund your wallet with SOL and try again.`,
-          { parse_mode: 'Markdown' }
-        );
-        return;
-      }
-
-      // Generic error fallback
-      await ctx.reply(`❌ Failed to create position: ${error.message}`);
     }
+
+    // Method 3: Check stringified error
+    const errorStr = JSON.stringify(error);
+    match = errorStr.match(insufficientLamportsPattern);
+    if (match) return this.parseLamportsMatch(match);
+
+    return null;
+  }
+
+  private parseLamportsMatch(match: RegExpMatchArray) {
+    const currentLamports = parseInt(match[1]);
+    const requiredLamports = parseInt(match[2]);
+    const currentSol = currentLamports / 1_000_000_000;
+    const requiredSol = requiredLamports / 1_000_000_000;
+    const neededSol = (requiredLamports - currentLamports) / 1_000_000_000;
+
+    console.log(`💡 Detected insufficient SOL: current=${currentSol.toFixed(4)}, needed=${neededSol.toFixed(4)}`);
+
+    return { currentSol, requiredSol, neededSol };
+  }
+
+  private formatInsufficientSolMessage(solError: { currentSol: number; requiredSol: number; neededSol: number }) {
+    return (
+      `⚠️ **Insufficient SOL Balance**\n\n` +
+      `Your wallet doesn't have enough SOL for this transaction.\n\n` +
+      `💰 Current: ${solError.currentSol.toFixed(4)} SOL\n` +
+      `💳 Required: ${solError.requiredSol.toFixed(4)} SOL\n` +
+      `📥 Need: ${solError.neededSol.toFixed(4)} SOL more\n\n` +
+      `Please fund your wallet with SOL and try again.`
+    );
   }
 
   async handleViewPositions(ctx: Context): Promise<void> {

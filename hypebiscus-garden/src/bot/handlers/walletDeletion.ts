@@ -105,6 +105,159 @@ export async function handleConfirmDeleteWalletCommand(ctx: Context) {
 }
 
 /**
+ * Validation result for deletion confirmation
+ */
+interface ValidationResult {
+  isValid: boolean;
+  errorMessage?: string;
+}
+
+/**
+ * Deleted records from the wallet deletion operation
+ */
+interface DeletedRecords {
+  userLink: boolean;
+  credits: number;
+  subscriptions: number;
+  creditTransactions: number;
+  positionLinks: number;
+  linkTokens: number;
+  repositionExecutions: number;
+  pendingTransactions: number;
+  botGeneratedWallet: boolean;
+}
+
+/**
+ * Validate that the user is in the deletion flow
+ */
+function validateDeletionFlow(session: any): ValidationResult {
+  if (!session || !session.awaitingWalletDeletion) {
+    return { isValid: false }; // Not in deletion flow, silently skip
+  }
+  return { isValid: true };
+}
+
+/**
+ * Validate that the confirmation text matches exactly
+ */
+function validateConfirmationText(text: string): ValidationResult {
+  if (text !== 'DELETE MY WALLET') {
+    return {
+      isValid: false,
+      errorMessage:
+        `❌ Confirmation failed.\n\n` +
+        `You typed: "${text}"\n` +
+        `Required: "DELETE MY WALLET"\n\n` +
+        `Please type it exactly as shown (case-sensitive).`
+    };
+  }
+  return { isValid: true };
+}
+
+/**
+ * Clear the deletion session state
+ */
+function clearDeletionSession(session: any): string | null {
+  session.awaitingWalletDeletion = false;
+  const walletAddress = session.walletToDelete;
+  session.walletToDelete = null;
+  return walletAddress;
+}
+
+/**
+ * Build a summary line for a deleted record type
+ */
+function buildRecordLine(
+  condition: boolean | number,
+  text: string
+): string {
+  if (!condition) return '';
+
+  if (typeof condition === 'number' && condition > 0) {
+    return `• ✅ ${condition} ${text}\n`;
+  }
+
+  if (condition === true) {
+    return `• ✅ ${text}\n`;
+  }
+
+  return '';
+}
+
+/**
+ * Build the deletion summary message
+ */
+function buildDeletionSummary(
+  walletAddress: string | null,
+  deletedRecords: DeletedRecords
+): string {
+  const shortAddress = walletAddress
+    ? `${walletAddress.slice(0, 8)}...${walletAddress.slice(-8)}`
+    : 'Unknown';
+
+  let summary =
+    `✅ *Wallet Deleted Successfully*\n\n` +
+    `Wallet: \`${shortAddress}\`\n\n` +
+    `📊 *Deleted Records:*\n`;
+
+  summary += buildRecordLine(deletedRecords.userLink, 'Wallet link removed');
+  summary += buildRecordLine(deletedRecords.credits, 'credit record(s)');
+  summary += buildRecordLine(deletedRecords.subscriptions, 'subscription(s)');
+  summary += buildRecordLine(deletedRecords.creditTransactions, 'transaction(s)');
+  summary += buildRecordLine(deletedRecords.positionLinks, 'position link(s)');
+  summary += buildRecordLine(deletedRecords.linkTokens, 'link token(s)');
+  summary += buildRecordLine(deletedRecords.repositionExecutions, 'reposition execution(s)');
+  summary += buildRecordLine(deletedRecords.pendingTransactions, 'pending transaction(s)');
+  summary += buildRecordLine(deletedRecords.botGeneratedWallet, 'Bot-generated wallet keys');
+
+  summary +=
+    `\n✨ All wallet data has been permanently removed.\n\n` +
+    `You can link a new wallet anytime using /link`;
+
+  return summary;
+}
+
+/**
+ * Execute the wallet deletion and send response
+ */
+async function executeDeletion(
+  ctx: Context,
+  telegramId: string,
+  walletAddress: string | null
+): Promise<void> {
+  await ctx.reply('🗑️ Deleting wallet and all associated data...');
+
+  const result = await mcpClient.deleteWalletCompletely(telegramId);
+
+  if (result.success) {
+    const summary = buildDeletionSummary(walletAddress, result.deletedRecords);
+    await ctx.reply(summary, { parse_mode: 'Markdown' });
+  } else {
+    await ctx.reply('❌ Failed to delete wallet. Please try again or contact support.');
+  }
+}
+
+/**
+ * Handle errors during wallet deletion
+ */
+async function handleDeletionError(ctx: Context, error: unknown): Promise<void> {
+  console.error('Error deleting wallet:', error);
+
+  // Clear session state on error
+  if ((ctx as any).session) {
+    (ctx as any).session.awaitingWalletDeletion = false;
+    (ctx as any).session.walletToDelete = null;
+  }
+
+  await ctx.reply(
+    `❌ *Deletion Failed*\n\n` +
+    `Error: ${error instanceof Error ? error.message : 'Unknown error'}\n\n` +
+    `Please try again or contact support.`,
+    { parse_mode: 'Markdown' }
+  );
+}
+
+/**
  * Handle confirmation text "DELETE MY WALLET"
  * Actually performs the deletion
  */
@@ -113,99 +266,34 @@ export async function handleDeleteWalletConfirmation(ctx: Context) {
     const text = (ctx.message as any)?.text;
     const session = (ctx as any).session;
 
-    // Check if we're awaiting deletion confirmation
-    if (!session || !session.awaitingWalletDeletion) {
-      return; // Not in deletion flow
+    // Validate deletion flow
+    const flowValidation = validateDeletionFlow(session);
+    if (!flowValidation.isValid) {
+      return; // Not in deletion flow, silently skip
     }
 
-    // Check if text matches exactly
-    if (text !== 'DELETE MY WALLET') {
-      await ctx.reply(
-        `❌ Confirmation failed.\n\n` +
-        `You typed: "${text}"\n` +
-        `Required: "DELETE MY WALLET"\n\n` +
-        `Please type it exactly as shown (case-sensitive).`
-      );
+    // Validate confirmation text
+    const textValidation = validateConfirmationText(text);
+    if (!textValidation.isValid) {
+      await ctx.reply(textValidation.errorMessage!);
       return;
     }
 
+    // Validate telegram ID
     const telegramId = ctx.from?.id.toString();
     if (!telegramId) {
       await ctx.reply('❌ Unable to identify your account.');
       return;
     }
 
-    // Clear session state
-    session.awaitingWalletDeletion = false;
-    const walletAddress = session.walletToDelete;
-    session.walletToDelete = null;
+    // Clear session and get wallet address
+    const walletAddress = clearDeletionSession(session);
 
-    // Show processing message
-    await ctx.reply('🗑️ Deleting wallet and all associated data...');
-
-    // Perform the deletion
-    const result = await mcpClient.deleteWalletCompletely(telegramId);
-
-    if (result.success) {
-      // Show detailed deletion summary
-      let summary =
-        `✅ *Wallet Deleted Successfully*\n\n` +
-        `Wallet: \`${walletAddress?.slice(0, 8)}...${walletAddress?.slice(-8)}\`\n\n` +
-        `📊 *Deleted Records:*\n`;
-
-      if (result.deletedRecords.userLink) {
-        summary += `• ✅ Wallet link removed\n`;
-      }
-      if (result.deletedRecords.credits > 0) {
-        summary += `• ✅ ${result.deletedRecords.credits} credit record(s)\n`;
-      }
-      if (result.deletedRecords.subscriptions > 0) {
-        summary += `• ✅ ${result.deletedRecords.subscriptions} subscription(s)\n`;
-      }
-      if (result.deletedRecords.creditTransactions > 0) {
-        summary += `• ✅ ${result.deletedRecords.creditTransactions} transaction(s)\n`;
-      }
-      if (result.deletedRecords.positionLinks > 0) {
-        summary += `• ✅ ${result.deletedRecords.positionLinks} position link(s)\n`;
-      }
-      if (result.deletedRecords.linkTokens > 0) {
-        summary += `• ✅ ${result.deletedRecords.linkTokens} link token(s)\n`;
-      }
-      if (result.deletedRecords.repositionExecutions > 0) {
-        summary += `• ✅ ${result.deletedRecords.repositionExecutions} reposition execution(s)\n`;
-      }
-      if (result.deletedRecords.pendingTransactions > 0) {
-        summary += `• ✅ ${result.deletedRecords.pendingTransactions} pending transaction(s)\n`;
-      }
-      if (result.deletedRecords.botGeneratedWallet) {
-        summary += `• ✅ Bot-generated wallet keys\n`;
-      }
-
-      summary +=
-        `\n✨ All wallet data has been permanently removed.\n\n` +
-        `You can link a new wallet anytime using /link`;
-
-      await ctx.reply(summary, { parse_mode: 'Markdown' });
-
-    } else {
-      await ctx.reply('❌ Failed to delete wallet. Please try again or contact support.');
-    }
+    // Execute deletion
+    await executeDeletion(ctx, telegramId, walletAddress);
 
   } catch (error) {
-    console.error('Error deleting wallet:', error);
-
-    // Clear session state on error
-    if ((ctx as any).session) {
-      (ctx as any).session.awaitingWalletDeletion = false;
-      (ctx as any).session.walletToDelete = null;
-    }
-
-    await ctx.reply(
-      `❌ *Deletion Failed*\n\n` +
-      `Error: ${error instanceof Error ? error.message : 'Unknown error'}\n\n` +
-      `Please try again or contact support.`,
-      { parse_mode: 'Markdown' }
-    );
+    await handleDeletionError(ctx, error);
   }
 }
 
