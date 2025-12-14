@@ -190,6 +190,7 @@ export function validateMCPRequest(body: unknown): { isValid: boolean; error?: s
       'link_wallet',
       'get_linked_account',
       'unlink_wallet',
+      'delete_wallet_completely',
       'check_subscription',
       'get_credit_balance',
       'purchase_credits',
@@ -200,7 +201,10 @@ export function validateMCPRequest(body: unknown): { isValid: boolean; error?: s
       'analyze_reposition',
       'prepare_reposition',
       'get_position_chain',
-      'get_wallet_reposition_stats'
+      'get_wallet_reposition_stats',
+      'calculate_position_pnl',
+      'close_position',
+      'get_wallet_pnl'
     ];
 
     if (!availableTools.includes(params.name)) {

@@ -1,5 +1,5 @@
 // Database service using Prisma + Supabase
-import { PrismaClient, Position } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 
 export const prisma = new PrismaClient();
 
@@ -108,6 +108,67 @@ export async function createPosition(
   });
 }
 
+/**
+ * Create position with enhanced PnL tracking
+ * Records deposit prices, amounts, and transaction history
+ */
+export async function createPositionWithEnhancedTracking(
+  userId: string,
+  positionId: string,
+  poolAddress: string,
+  zbtcAmount: number,
+  solAmount: number,
+  zbtcPrice: number,
+  solPrice: number,
+  entryPrice: number,
+  entryBin: number
+) {
+  const depositValueUsd = (zbtcAmount * zbtcPrice) + (solAmount * solPrice);
+
+  console.log('Creating position with enhanced tracking:');
+  console.log('  Position ID:', positionId.substring(0, 8) + '...');
+  console.log('  Deposit:', zbtcAmount.toFixed(8), 'zBTC +', solAmount.toFixed(4), 'SOL');
+  console.log('  Prices: zBTC=$' + zbtcPrice.toFixed(2) + ', SOL=$' + solPrice.toFixed(2));
+  console.log('  Deposit Value: $' + depositValueUsd.toFixed(2));
+
+  // Create position with enhanced PnL tracking
+  const position = await prisma.position.create({
+    data: {
+      userId,
+      positionId,
+      poolAddress,
+      zbtcAmount,
+      solAmount,
+      entryPrice,
+      entryBin,
+      // Enhanced PnL tracking (snake_case to match Prisma schema)
+      deposit_value_usd: depositValueUsd,
+      deposit_token_x_price: zbtcPrice,
+      deposit_token_y_price: solPrice,
+      source: 'telegram',
+    },
+  });
+
+  // Record deposit transaction (snake_case to match Prisma schema)
+  await prisma.position_transactions.create({
+    data: {
+      position_id: positionId,
+      transaction_type: 'deposit',
+      timestamp: new Date(),
+      token_x_amount: zbtcAmount,
+      token_y_amount: solAmount,
+      token_x_price: zbtcPrice,
+      token_y_price: solPrice,
+      usd_value: depositValueUsd,
+      notes: 'Position created via Garden Bot',
+    },
+  });
+
+  console.log('Position created with enhanced tracking');
+
+  return position;
+}
+
 export async function getActivePositions(userId: string) {
   return prisma.position.findMany({
     where: { userId, isActive: true },
@@ -128,9 +189,9 @@ export async function getPositionStats(userId: string) {
     where: { userId, isActive: false },
   });
 
-  const totalPnl = positions.reduce((sum: number, pos: Position) => sum + (Number(pos.pnlPercent) || 0), 0);
+  const totalPnl = positions.reduce((sum, pos) => sum + (Number(pos.pnlPercent) || 0), 0);
   const avgPnl = positions.length > 0 ? totalPnl / positions.length : 0;
-  const winCount = positions.filter((pos: Position) => (Number(pos.pnlPercent) || 0) > 0).length;
+  const winCount = positions.filter(pos => (Number(pos.pnlPercent) || 0) > 0).length;
   const winRate = positions.length > 0 ? (winCount / positions.length) * 100 : 0;
 
   return {
@@ -228,9 +289,9 @@ export async function updateUserStats(userId: string) {
     prisma.position.count({ where: { userId, isActive: true } })
   ]);
 
-  const totalZbtcFees = positions.reduce((sum: number, p: Position) => sum + Number(p.zbtcFees || 0), 0);
-  const totalSolFees = positions.reduce((sum: number, p: Position) => sum + Number(p.solFees || 0), 0);
-  const totalPnlUsd = positions.reduce((sum: number, p: Position) => sum + Number(p.pnlUsd || 0), 0);
+  const totalZbtcFees = positions.reduce((sum, p) => sum + Number(p.zbtcFees || 0), 0);
+  const totalSolFees = positions.reduce((sum, p) => sum + Number(p.solFees || 0), 0);
+  const totalPnlUsd = positions.reduce((sum, p) => sum + Number(p.pnlUsd || 0), 0);
 
   return prisma.userStats.upsert({
     where: { userId },

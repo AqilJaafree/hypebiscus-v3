@@ -58,6 +58,112 @@ export interface UserPositionsWithSyncParams extends Record<string, unknown> {
   includeLive?: boolean;
 }
 
+export interface CalculatePositionPnLParams extends Record<string, unknown> {
+  positionId: string;
+}
+
+export interface ClosePositionParams extends Record<string, unknown> {
+  positionId: string;
+  walletAddress: string;
+  closeOnBlockchain?: boolean;
+  transactionSignature?: string;
+}
+
+export interface GetWalletPnLParams extends Record<string, unknown> {
+  walletAddress: string;
+}
+
+export interface PositionPnLResult {
+  positionId: string;
+  realizedPnlUsd: number;
+  realizedPnlPercent: number;
+  depositValueUsd: number;
+  currentValueUsd: number;
+  feesEarnedUsd: number;
+  rewardsEarnedUsd: number;
+  impermanentLoss: {
+    usd: number;
+    percent: number;
+  };
+  status: string;
+}
+
+export interface ClosePositionResult {
+  success: boolean;
+  positionId: string;
+  signature?: string;
+  pnl: PositionPnLResult;
+}
+
+export interface WalletPnLResult {
+  walletAddress: string;
+  totalPnlUsd: number;
+  totalPnlPercent: number;
+  totalFeesEarnedUsd: number;
+  totalRewardsEarnedUsd: number;
+  totalImpermanentLossUsd: number;
+  activePositionsCount: number;
+  closedPositionsCount: number;
+  positions: PositionPnLResult[];
+}
+
+export interface SubscriptionCheckParams extends Record<string, unknown> {
+  walletAddress: string;
+}
+
+export interface SubscriptionCheckResult {
+  isActive: boolean;
+  tier?: string;
+  status?: string;
+  expiresAt?: string;
+  daysRemaining?: number;
+  message: string;
+}
+
+export interface CreditBalanceParams extends Record<string, unknown> {
+  walletAddress: string;
+}
+
+export interface CreditBalanceResult {
+  balance: number;
+  totalPurchased: number;
+  totalUsed: number;
+  message: string;
+}
+
+export type UserTier = 'free' | 'credits' | 'premium';
+
+export interface UserTierInfo {
+  tier: UserTier;
+  hasActiveSubscription: boolean;
+  subscriptionDaysRemaining?: number;
+  creditBalance: number;
+  canAccessFullPnL: boolean;
+  canAccessAdvancedFeatures: boolean;
+}
+
+export interface DeleteWalletCompletelyParams extends Record<string, unknown> {
+  walletAddress?: string;
+  telegramId?: string;
+}
+
+export interface DeleteWalletCompletelyResult {
+  success: boolean;
+  walletAddress: string;
+  deletedRecords: {
+    userLink: boolean;
+    positionLinks: number;
+    credits: number;
+    subscriptions: number;
+    creditTransactions: number;
+    linkTokens: number;
+    repositionExecutions: number;
+    pendingTransactions: number;
+    botGeneratedWallet: boolean;
+  };
+  message: string;
+}
+
 export class MCPClient {
   private apiUrl: string;
   private timeout: number;
@@ -207,6 +313,100 @@ export class MCPClient {
    */
   async calculateRebalance(params: CalculateRebalanceParams): Promise<unknown> {
     return this.call('calculate_rebalance', params);
+  }
+
+  /**
+   * Calculate PnL for a specific position
+   * Returns detailed PnL breakdown including realized PnL, fees, rewards, and impermanent loss
+   */
+  async calculatePositionPnL(params: CalculatePositionPnLParams): Promise<PositionPnLResult> {
+    return this.call<PositionPnLResult>('calculate_position_pnl', params);
+  }
+
+  /**
+   * Close a position and calculate final PnL
+   * Set closeOnBlockchain=false if already closed on blockchain (like Garden Bot does)
+   * This will only calculate PnL and update database
+   */
+  async closePosition(params: ClosePositionParams): Promise<ClosePositionResult> {
+    return this.call<ClosePositionResult>('close_position', params);
+  }
+
+  /**
+   * Get wallet-level PnL summary across all positions
+   * Returns aggregated PnL, fees, rewards, and IL for the entire wallet
+   */
+  async getWalletPnL(params: GetWalletPnLParams): Promise<WalletPnLResult> {
+    return this.call<WalletPnLResult>('get_wallet_pnl', params);
+  }
+
+  /**
+   * Check if wallet has active subscription
+   */
+  async checkSubscription(params: SubscriptionCheckParams): Promise<SubscriptionCheckResult> {
+    return this.call<SubscriptionCheckResult>('check_subscription', params);
+  }
+
+  /**
+   * Get credit balance for wallet
+   */
+  async getCreditBalance(params: CreditBalanceParams): Promise<CreditBalanceResult> {
+    return this.call<CreditBalanceResult>('get_credit_balance', params);
+  }
+
+  /**
+   * Get user tier information (subscription + credits)
+   * Determines what features user can access
+   */
+  async getUserTier(walletAddress: string): Promise<UserTierInfo> {
+    try {
+      const [subscription, credits] = await Promise.all([
+        this.checkSubscription({ walletAddress }),
+        this.getCreditBalance({ walletAddress }),
+      ]);
+
+      // Determine tier
+      let tier: UserTier = 'free';
+      let canAccessFullPnL = false;
+      let canAccessAdvancedFeatures = false;
+
+      if (subscription.isActive) {
+        tier = 'premium';
+        canAccessFullPnL = true;
+        canAccessAdvancedFeatures = true;
+      } else if (credits.balance > 0) {
+        tier = 'credits';
+        canAccessFullPnL = true;
+        canAccessAdvancedFeatures = false; // Credits don't unlock advanced features
+      }
+
+      return {
+        tier,
+        hasActiveSubscription: subscription.isActive,
+        subscriptionDaysRemaining: subscription.daysRemaining,
+        creditBalance: credits.balance,
+        canAccessFullPnL,
+        canAccessAdvancedFeatures,
+      };
+    } catch (error) {
+      // If check fails, assume free tier
+      console.warn('Failed to check user tier:', error);
+      return {
+        tier: 'free',
+        hasActiveSubscription: false,
+        creditBalance: 0,
+        canAccessFullPnL: false,
+        canAccessAdvancedFeatures: false,
+      };
+    }
+  }
+
+  /**
+   * Completely delete a wallet and all associated data
+   * WARNING: This is a DESTRUCTIVE operation that cannot be undone
+   */
+  async deleteWalletCompletely(params: DeleteWalletCompletelyParams): Promise<DeleteWalletCompletelyResult> {
+    return this.call<DeleteWalletCompletelyResult>('delete_wallet_completely', params);
   }
 
   /**

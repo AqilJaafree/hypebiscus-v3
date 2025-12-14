@@ -50,5 +50,15 @@
   "engines": {
     "node": ">=18.0.0",
     "npm": ">=9.0.0"
+  },
+  "pnpm": {
+    "auditConfig": {
+      "ignoreCves": [
+        "CVE-2025-3194"
+      ]
+    },
+    "comments": {
+      "CVE-2025-3194": "bigint-buffer vulnerability - transitive dependency from @solana/spl-token. Risk: LOW. Impact: DoS only (app has auto-restart). No fix available yet. Monitored via @meteora-ag/dlmm and @solana/spl-token updates."
+    }
   }
 }

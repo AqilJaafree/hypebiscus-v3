@@ -1,4 +1,5 @@
 import { Telegraf, Context } from 'telegraf';
+import { Agent as HttpsAgent } from 'https';
 import { WalletService } from '../services/walletService';
 import { DlmmService } from '../services/dlmmService';
 import { MonitoringService } from '../services/monitoringService';
@@ -25,6 +26,12 @@ import {
   handleSubscribeCommand,
   handleSettingsCallback
 } from './handlers/settings';
+import {
+  handleDeleteWalletCommand,
+  handleConfirmDeleteWalletCommand,
+  handleDeleteWalletConfirmation,
+  handleCancelDeletion
+} from './handlers/walletDeletion';
 import { mainKeyboard, backKeyboard } from './keyboards';
 import { getOrCreateUser } from '../services/db';
 
@@ -39,8 +46,26 @@ export class TelegramBot {
   private sessions: Map<number, any> = new Map();
 
   constructor(token: string, rpcUrl: string) {
-    this.bot = new Telegraf(token);
-    
+    // Create HTTPS agent with longer timeout for slow networks
+    const httpsAgent = new HttpsAgent({
+      keepAlive: true,
+      timeout: 120000, // 120 seconds connection timeout
+      keepAliveMsecs: 30000,
+      maxSockets: 10,
+      maxFreeSockets: 5,
+      family: 4, // Force IPv4 only (IPv6 may be blocked)
+    });
+
+    // Configure Telegraf with custom agent and timeouts
+    this.bot = new Telegraf(token, {
+      telegram: {
+        apiRoot: 'https://api.telegram.org',
+        agent: httpsAgent,
+        webhookReply: false, // Use long polling (not webhook)
+      },
+      handlerTimeout: 90_000, // 90 seconds for handler execution
+    });
+
     this.bot.use((ctx, next) => {
       const userId = ctx.from?.id;
       if (userId) {
@@ -117,6 +142,10 @@ export class TelegramBot {
         `/link <CODE> - Link website wallet\n` +
         `/linked - Check link status\n` +
         `/unlink - Unlink wallet\n\n` +
+        `**Wallet Deletion:**\n` +
+        `/deletewallet - Delete wallet data (PERMANENT)\n` +
+        `/confirmdeletewallet - Confirm deletion\n` +
+        `/cancel - Cancel deletion process\n\n` +
         `**Auto-Reposition:**\n` +
         `/settings - View/edit settings\n` +
         `/enableauto - Enable auto-repositioning\n` +
@@ -206,6 +235,11 @@ export class TelegramBot {
     this.bot.command('enableauto', handleEnableAutoCommand);
     this.bot.command('disableauto', handleDisableAutoCommand);
     this.bot.command('subscribe', handleSubscribeCommand);
+
+    // Wallet deletion commands
+    this.bot.command('deletewallet', handleDeleteWalletCommand);
+    this.bot.command('confirmdeletewallet', handleConfirmDeleteWalletCommand);
+    this.bot.command('cancel', handleCancelDeletion);
 
     // Photo handler for QR code scanning
     this.bot.on('photo', handleQRCodePhoto);
@@ -336,6 +370,12 @@ export class TelegramBot {
         return;
       }
 
+      // Check if user is confirming wallet deletion
+      if (session.awaitingWalletDeletion) {
+        await handleDeleteWalletConfirmation(ctx);
+        return;
+      }
+
       console.log(`❌ No session handler found for user ${userId}`);
       ctx.reply(
         '❓ I didn\'t understand that. Use /help to see available commands or use the buttons below.',
@@ -351,14 +391,71 @@ export class TelegramBot {
 
   async start(): Promise<void> {
     console.log('🚀 Starting Telegram bot...');
-    
+
     try {
       await this.dlmmService.initializePool();
       console.log('✅ DLMM service initialized');
-      
-      console.log('🚀 Starting Telegram bot...');
-      await this.bot.launch();
-      console.log('✅ Telegram bot started');
+
+      console.log('🚀 Connecting to Telegram API...');
+
+      // WORKAROUND: Manually delete webhook using native HTTPS instead of Telegraf
+      // This avoids the node-fetch timeout issue
+      console.log('   Clearing webhook manually...');
+      try {
+        const https = require('https');
+        const url = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/deleteWebhook`;
+        await new Promise((resolve, reject) => {
+          https.get(url, {timeout: 30000}, (res: any) => {
+            let data = '';
+            res.on('data', (chunk: any) => data += chunk);
+            res.on('end', () => {
+              console.log('   ✅ Webhook cleared successfully');
+              resolve(data);
+            });
+          }).on('error', (e: Error) => {
+            console.warn('   ⚠️  Warning: Failed to clear webhook:', e.message);
+            resolve(null); // Continue anyway
+          });
+        });
+      } catch (e) {
+        console.warn('   ⚠️  Warning: Webhook clear failed, continuing anyway');
+      }
+
+      // Retry logic for Telegram connection (for slow networks)
+      let retries = 3;
+      let lastError: Error | null = null;
+
+      while (retries > 0) {
+        try {
+          console.log(`   Attempt ${4 - retries}/3...`);
+          await Promise.race([
+            this.bot.launch({
+              // Explicitly use long polling mode
+              allowedUpdates: ['message', 'callback_query'],
+              dropPendingUpdates: false, // Don't drop updates - webhook already cleared
+            }),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error('Connection timeout after 120s')), 120000)
+            )
+          ]);
+          console.log('✅ Telegram bot started successfully');
+          lastError = null;
+          break;
+        } catch (error) {
+          lastError = error as Error;
+          console.log(`   ❌ Error: ${lastError.message}`);
+          console.log(`   Error type: ${lastError.name}, Code: ${(lastError as any).code}`);
+          retries--;
+          if (retries > 0) {
+            console.log(`   ⚠️  Retrying in 5 seconds... (${retries} attempts left)`);
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          }
+        }
+      }
+
+      if (lastError) {
+        throw new Error(`Failed to connect to Telegram after 3 attempts: ${lastError.message}`);
+      }
       
       this.monitoringService.start();
       

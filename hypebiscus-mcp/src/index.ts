@@ -27,6 +27,7 @@ import { linkWallet, formatLinkWallet, formatLinkWalletError } from './tools/lin
 import { linkWalletByShortToken, formatLinkWalletByShortToken, formatLinkWalletByShortTokenError } from './tools/linkWalletByShortToken.js';
 import { getLinkedAccount, formatGetLinkedAccount, formatGetLinkedAccountError } from './tools/getLinkedAccount.js';
 import { unlinkWallet, formatUnlinkWallet, formatUnlinkWalletError } from './tools/unlinkWallet.js';
+import { deleteWalletCompletely, DeleteWalletCompletelySchema, DeleteWalletCompletelyInput } from './tools/deleteWalletCompletely.js';
 import { getRepositionSettings, formatGetRepositionSettings, formatGetRepositionSettingsError } from './tools/getRepositionSettings.js';
 import { updateRepositionSettings, formatUpdateRepositionSettings, formatUpdateRepositionSettingsError } from './tools/updateRepositionSettings.js';
 import { checkSubscription as checkSubscriptionTool, CheckSubscriptionSchema, CheckSubscriptionInput } from './tools/checkSubscription.js';
@@ -34,6 +35,9 @@ import { recordExecution, RecordExecutionSchema, RecordExecutionInput } from './
 import { getCreditBalance, GetCreditBalanceSchema, GetCreditBalanceInput } from './tools/getCreditBalance.js';
 import { purchaseCredits, PurchaseCreditsSchema, PurchaseCreditsInput } from './tools/purchaseCredits.js';
 import { useCredits, UseCreditsSchema, UseCreditsInput } from './tools/useCredits.js';
+import { calculatePositionPnL_tool, formatCalculatePnLError, CalculatePositionPnLInput } from './tools/calculatePositionPnL.js';
+import { closePosition_tool, formatClosePositionError, ClosePositionInput } from './tools/closePosition.js';
+import { getWalletPnL_tool, formatWalletPnL, formatWalletPnLError, GetWalletPnLInput } from './tools/getWalletPnL.js';
 import { PoolMetricsInput } from './tools/types.js';
 import {
   GetUserByWalletInput,
@@ -369,6 +373,24 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: 'delete_wallet_completely',
+    description:
+      'DESTRUCTIVE: Completely deletes a wallet and all associated data including credits, subscriptions, transactions, position links, and bot-generated wallet keys. This action cannot be undone. Use with extreme caution.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        walletAddress: {
+          type: 'string',
+          description: 'Wallet address to completely delete',
+        },
+        telegramId: {
+          type: 'string',
+          description: 'Telegram user ID to delete wallet for',
+        },
+      },
+    },
+  },
+  {
     name: 'get_reposition_settings',
     description:
       'Fetches or creates default auto-reposition settings for a user. Returns settings including auto-reposition enabled status, thresholds, and notification preferences.',
@@ -573,6 +595,67 @@ const TOOLS: Tool[] = [
       required: ['walletAddress', 'amount', 'positionAddress'],
     },
   },
+  {
+    name: 'calculate_position_pnl',
+    description:
+      'Calculates production-grade PnL for a single position including realized/unrealized PnL, impermanent loss, fees earned, and rewards. Uses stored deposit prices for accurate historical tracking.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        positionId: {
+          type: 'string',
+          description: 'Position address (Solana public key)',
+        },
+      },
+      required: ['positionId'],
+    },
+  },
+  {
+    name: 'close_position',
+    description:
+      'Closes a position with production-grade PnL tracking. Records withdrawal prices, calculates final PnL, and updates position and user stats in database. Note: Blockchain execution requires keypair from client.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        positionId: {
+          type: 'string',
+          description: 'Position address to close',
+        },
+        walletAddress: {
+          type: 'string',
+          description: 'Owner wallet address',
+        },
+        closeOnBlockchain: {
+          type: 'boolean',
+          description: 'If true, close on blockchain (requires keypair). If false, just record in DB (position already closed)',
+        },
+        transactionSignature: {
+          type: 'string',
+          description: 'Optional transaction signature if position was already closed on-chain',
+        },
+      },
+      required: ['positionId', 'walletAddress'],
+    },
+  },
+  {
+    name: 'get_wallet_pnl',
+    description:
+      'Gets aggregated PnL for all positions in a wallet with detailed breakdown. Includes total PnL, impermanent loss, fees, rewards, and position-by-position analysis. Sorted by status (active first) then by PnL.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        walletAddress: {
+          type: 'string',
+          description: 'Solana wallet address',
+        },
+        includeClosedPositions: {
+          type: 'boolean',
+          description: 'Include closed positions in results (default: true)',
+        },
+      },
+      required: ['walletAddress'],
+    },
+  },
 ];
 
 // Zod schemas for input validation
@@ -676,6 +759,22 @@ const UpdateRepositionSettingsSchema = z.object({
     websiteNotifications: z.boolean().optional(),
   }),
   updatedFrom: z.enum(['telegram', 'website']),
+});
+
+const CalculatePositionPnLSchema = z.object({
+  positionId: z.string(),
+});
+
+const ClosePositionSchema = z.object({
+  positionId: z.string(),
+  walletAddress: z.string(),
+  closeOnBlockchain: z.boolean().optional(),
+  transactionSignature: z.string().optional(),
+});
+
+const GetWalletPnLSchema = z.object({
+  walletAddress: z.string(),
+  includeClosedPositions: z.boolean().optional(),
 });
 
 /**
@@ -968,6 +1067,20 @@ class HypebiscusMCPServer {
             };
           }
 
+          case 'delete_wallet_completely': {
+            const validatedInput = DeleteWalletCompletelySchema.parse(args);
+            const result = await deleteWalletCompletely(validatedInput as DeleteWalletCompletelyInput);
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify(result, null, 2),
+                },
+              ],
+            };
+          }
+
           case 'get_reposition_settings': {
             const validatedInput = GetRepositionSettingsSchema.parse(args);
             const result = await getRepositionSettings(validatedInput as GetRepositionSettingsInput);
@@ -1068,6 +1181,55 @@ class HypebiscusMCPServer {
             };
           }
 
+          case 'calculate_position_pnl': {
+            const validatedInput = CalculatePositionPnLSchema.parse(args);
+            const result = await calculatePositionPnL_tool(validatedInput as CalculatePositionPnLInput);
+
+            // Return JSON data for programmatic consumption by Garden Bot
+            const jsonOutput = JSON.stringify(result, null, 2);
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: jsonOutput,
+                },
+              ],
+            };
+          }
+
+          case 'close_position': {
+            const validatedInput = ClosePositionSchema.parse(args);
+            const result = await closePosition_tool(validatedInput as ClosePositionInput);
+
+            // Return JSON data for programmatic consumption by Garden Bot
+            const jsonOutput = JSON.stringify(result, null, 2);
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: jsonOutput,
+                },
+              ],
+            };
+          }
+
+          case 'get_wallet_pnl': {
+            const validatedInput = GetWalletPnLSchema.parse(args);
+            const result = await getWalletPnL_tool(validatedInput as GetWalletPnLInput);
+            const formattedOutput = formatWalletPnL(result);
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: formattedOutput,
+                },
+              ],
+            };
+          }
+
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -1119,6 +1281,9 @@ class HypebiscusMCPServer {
           case 'unlink_wallet':
             errorMessage = formatUnlinkWalletError(error);
             break;
+          case 'delete_wallet_completely':
+            errorMessage = `Error deleting wallet: ${error instanceof Error ? error.message : 'Unknown error'}`;
+            break;
           case 'get_reposition_settings':
             errorMessage = formatGetRepositionSettingsError(error);
             break;
@@ -1130,6 +1295,15 @@ class HypebiscusMCPServer {
             break;
           case 'record_execution':
             errorMessage = `Error recording execution: ${error instanceof Error ? error.message : 'Unknown error'}`;
+            break;
+          case 'calculate_position_pnl':
+            errorMessage = formatCalculatePnLError(error);
+            break;
+          case 'close_position':
+            errorMessage = formatClosePositionError(error);
+            break;
+          case 'get_wallet_pnl':
+            errorMessage = formatWalletPnLError(error);
             break;
           default:
             errorMessage = formatToolError(error);

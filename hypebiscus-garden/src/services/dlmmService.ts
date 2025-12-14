@@ -224,6 +224,10 @@ export class DlmmService {
           slippage: 1000
         });
 
+        // Meteora SDK already adds optimal ComputeBudget instructions
+        // We don't need to add our own - let the SDK handle it
+        console.log('ℹ️ Using Meteora SDK default priority fees');
+
         createPositionTx.recentBlockhash = blockhash;
         createPositionTx.feePayer = userKeypair.publicKey;
         createPositionTx.sign(userKeypair, positionKeypair);
@@ -437,19 +441,113 @@ export class DlmmService {
     }
   }
 
+  /**
+   * Close a position on-chain by removing all liquidity
+   *
+   * Flow (per Meteora DLMM SDK docs):
+   * 1. Fetch position data from blockchain to get bin IDs
+   * 2. Call removeLiquidity with shouldClaimAndClose=true which:
+   *    - Removes 100% of liquidity from all bins
+   *    - Claims any accumulated swap fees
+   *    - Closes the position account on-chain
+   * 3. Returns withdrawn tokens to user's wallet
+   *
+   * Note: This ONLY handles blockchain operations. PnL calculation
+   * and database updates are handled separately by the MCP server.
+   *
+   * @param userKeypair - User's wallet keypair for signing transactions
+   * @param positionId - On-chain position public key
+   * @throws Error if position not found or transaction fails
+   */
+  /**
+   * Confirms a transaction using block height strategy with retry logic
+   * This is more reliable than the default confirmTransaction method
+   */
+  private async confirmTransactionWithRetry(
+    signature: string,
+    blockhash: { blockhash: string; lastValidBlockHeight: number },
+    maxRetries = 5 // Increased from 3 to 5
+  ): Promise<void> {
+    let retries = 0;
+
+    while (retries < maxRetries) {
+      try {
+        // Use block height strategy for confirmation
+        const confirmation = await this.connection.confirmTransaction(
+          {
+            signature,
+            blockhash: blockhash.blockhash,
+            lastValidBlockHeight: blockhash.lastValidBlockHeight
+          },
+          'confirmed'
+        );
+
+        if (confirmation.value.err) {
+          throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
+        }
+
+        console.log(`✅ Transaction confirmed: ${signature}`);
+        return;
+      } catch (error: any) {
+        retries++;
+        console.log(`⚠️ Confirmation attempt ${retries}/${maxRetries} failed`);
+
+        // Check transaction status even if confirmation timed out
+        const status = await this.connection.getSignatureStatus(signature);
+
+        if (status?.value?.confirmationStatus === 'confirmed' ||
+            status?.value?.confirmationStatus === 'finalized') {
+          console.log(`✅ Transaction confirmed via status check: ${signature}`);
+          return;
+        }
+
+        if (status?.value?.err) {
+          throw new Error(`Transaction failed: ${JSON.stringify(status.value.err)}`);
+        }
+
+        if (retries >= maxRetries) {
+          // Check one more time before failing
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          const finalStatus = await this.connection.getSignatureStatus(signature);
+
+          if (finalStatus?.value?.confirmationStatus === 'confirmed' ||
+              finalStatus?.value?.confirmationStatus === 'finalized') {
+            console.log(`✅ Transaction confirmed on final check: ${signature}`);
+            return;
+          }
+
+          throw new Error(
+            `Transaction not confirmed after ${maxRetries} attempts. ` +
+            `Signature: ${signature}. ` +
+            `Check status at https://solscan.io/tx/${signature} ` +
+            `(Status: ${finalStatus?.value?.confirmationStatus || 'null'})`
+          );
+        }
+
+        // Exponential backoff: 3s, 6s, 9s, 12s
+        const waitTime = 3000 * retries;
+        console.log(`⏳ Waiting ${waitTime/1000}s before retry ${retries + 1}...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      }
+    }
+  }
+
   async closePosition(userKeypair: Keypair, positionId: string): Promise<void> {
     await this.initializePool();
     if (!this.pool) throw new Error('Pool not initialized');
 
     try {
       const positionPubkey = new PublicKey(positionId);
+
+      // Step 1: Fetch position data from blockchain
       const position = await this.pool.getPosition(positionPubkey);
-      
+
       if (!position || !position.positionData) {
         console.log('⚠️ Position not found or already closed');
         return;
       }
 
+      // Step 2: Get all bin IDs where liquidity is deposited
       const binIdsToRemove = position.positionData.positionBinData.map(
         (bin: any) => bin.binId
       );
@@ -464,34 +562,47 @@ export class DlmmService {
 
       console.log(`📊 Removing liquidity from bins ${fromBinId} to ${toBinId}`);
 
+      // Step 3: Remove 100% liquidity and close position on-chain
+      // Per Meteora docs: shouldClaimAndClose=true does THREE things:
+      // 1. Removes all liquidity (bps = 10000 = 100%)
+      // 2. Claims accumulated swap fees
+      // 3. Closes position account (returns rent to user)
       const removeLiquidityTx = await this.pool.removeLiquidity({
         position: positionPubkey,
         user: userKeypair.publicKey,
         fromBinId,
         toBinId,
-        bps: new BN(100 * 100),
-        shouldClaimAndClose: true
+        bps: new BN(100 * 100), // 100% = 10000 basis points
+        shouldClaimAndClose: true // Claim fees + close position in one tx
       });
 
-      const txArray = Array.isArray(removeLiquidityTx) 
-        ? removeLiquidityTx 
+      const txArray = Array.isArray(removeLiquidityTx)
+        ? removeLiquidityTx
         : [removeLiquidityTx];
 
+      // Get blockhash with lastValidBlockHeight for block-height based confirmation
+      const blockhashInfo = await this.connection.getLatestBlockhash('confirmed');
+
       for (const tx of txArray) {
-        const { blockhash } = await this.connection.getLatestBlockhash('confirmed');
-        tx.recentBlockhash = blockhash;
+        // Meteora SDK already adds optimal ComputeBudget instructions
+        // We don't need to add our own - let the SDK handle it
+        console.log('ℹ️ Using Meteora SDK default priority fees');
+
+        tx.recentBlockhash = blockhashInfo.blockhash;
         tx.feePayer = userKeypair.publicKey;
         tx.sign(userKeypair);
-        
+
         const rawTx = tx.serialize();
         const signature = await this.connection.sendRawTransaction(rawTx, {
           skipPreflight: false,
           maxRetries: 2
         });
-        
+
         console.log(`📝 Remove liquidity tx sent: ${signature}`);
-        
-        await this.connection.confirmTransaction(signature, 'confirmed');
+        console.log(`🔗 Track transaction: https://solscan.io/tx/${signature}`);
+
+        // Use improved confirmation strategy with retry logic
+        await this.confirmTransactionWithRetry(signature, blockhashInfo);
         console.log(`✅ Liquidity removed and position closed`);
       }
       
@@ -526,7 +637,15 @@ export class DlmmService {
         range: maxBinId - minBinId,
         bins: positionBins
       };
-    } catch (error) {
+    } catch (error: any) {
+      // Expected error: Position not found (already closed)
+      if (error.message?.includes('not found')) {
+        // This is expected for closed positions, just log as info
+        console.log(`📊 Position ${positionId.substring(0, 8)}... not found on-chain (likely closed)`);
+        return null;
+      }
+
+      // Unexpected error: log as error
       console.error('❌ Failed to get position details:', error);
       return null;
     }
