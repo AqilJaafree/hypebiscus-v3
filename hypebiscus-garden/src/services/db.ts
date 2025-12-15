@@ -78,15 +78,46 @@ export async function createWallet(
 
   // Check if this public key is already used by another user
   const existingPublicKey = await prisma.wallet.findUnique({
-    where: { publicKey }
+    where: { publicKey },
+    include: { user: true }
   });
 
   if (existingPublicKey) {
-    throw new Error('This wallet is already imported by another account');
+    // Check if it's a ghost/web user (created by wallet linking)
+    const isGhostUser = existingPublicKey.user.username?.startsWith('web-') ||
+                        existingPublicKey.user.telegramId.toString().startsWith('-');
+
+    if (isGhostUser) {
+      // This is a ghost user from wallet linking - we can upgrade it
+      // Delete ghost wallet and user, then create new wallet for real user
+      const ghostUserId = existingPublicKey.userId;
+
+      // Delete in transaction to ensure atomicity
+      return await prisma.$transaction(async (tx) => {
+        // Delete ghost wallet first
+        await tx.wallet.delete({
+          where: { userId: ghostUserId }
+        });
+
+        // Delete ghost user
+        await tx.user.delete({
+          where: { id: ghostUserId }
+        });
+
+        // Create wallet for real user with private key
+        return await tx.wallet.create({
+          data: { userId, publicKey, encrypted, iv, source: 'telegram' },
+        });
+      });
+    } else {
+      // It's a real user's wallet - can't import
+      throw new Error('This wallet is already imported by another Telegram account');
+    }
   }
 
+  // No conflicts - create new wallet
   return prisma.wallet.create({
-    data: { userId, publicKey, encrypted, iv },
+    data: { userId, publicKey, encrypted, iv, source: 'telegram' },
   });
 }
 

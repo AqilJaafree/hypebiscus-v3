@@ -212,11 +212,16 @@ export class WalletHandler {
       const result = await this.walletService.importWallet(userId, privateKey);
 
       if (result) {
+        // Check if this was an upgrade from linked wallet
+        const isUpgrade = result.publicKey; // If successful, check context
+
         await ctx.reply(
           `✅ **Wallet Imported Successfully!**\n\n` +
           `📍 Address:\n\`${result.publicKey}\`\n\n` +
           `✨ Format detected: **${result.format}**\n\n` +
-          `💡 Your wallet is now ready to use!`,
+          `🚀 **Auto-Reposition Enabled!**\n` +
+          `Your wallet can now execute automatic repositions.\n\n` +
+          `💡 Use /settings to configure auto-reposition.`,
           { parse_mode: 'Markdown' }
         );
 
