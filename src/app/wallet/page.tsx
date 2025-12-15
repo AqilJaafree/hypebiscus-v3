@@ -48,6 +48,7 @@ import { TelegramLinkTab } from "./components/TelegramLinkTab";
 import { ErrorMessage } from "./components/ErrorMessage";
 import { SyncPositionsButton } from "./components/SyncPositionsButton";
 import { CreditGateAlert } from "./components/CreditGateAlert";
+import { AutoRepositionAlert } from "./components/AutoRepositionAlert";
 import {
   NoPositionsState,
   WalletNotConnectedState,
@@ -789,6 +790,11 @@ const WalletPage = () => {
                   show={connected}
                   positionCount={positionsArray.length}
                 />
+              )}
+
+              {/* Auto-Reposition Alert - Direct users to Telegram for full automation */}
+              {connected && positionsArray.length > 0 && (
+                <AutoRepositionAlert show={connected} />
               )}
 
               {/* Error Message */}

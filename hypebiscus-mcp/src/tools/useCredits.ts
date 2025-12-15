@@ -13,8 +13,9 @@ import { logger } from '../config.js';
 export const UseCreditsSchema = z.object({
   walletAddress: z.string().describe('The Solana wallet address using credits'),
   amount: z.number().positive().describe('Number of credits to deduct'),
-  positionAddress: z.string().describe('The position address this credit usage is for'),
+  positionAddress: z.string().optional().describe('Optional position address (for reposition operations)'),
   description: z.string().optional().describe('Optional description of what the credits were used for'),
+  relatedResourceId: z.string().optional().describe('Optional resource ID (for non-position operations like queries)'),
 });
 
 export type UseCreditsInput = z.infer<typeof UseCreditsSchema>;
@@ -39,14 +40,18 @@ export async function useCredits(
     logger.info('Using credits', {
       walletAddress: input.walletAddress.slice(0, 8) + '...',
       amount: input.amount,
-      positionAddress: input.positionAddress.slice(0, 8) + '...',
+      positionAddress: input.positionAddress ? input.positionAddress.slice(0, 8) + '...' : 'N/A',
+      relatedResourceId: input.relatedResourceId,
     });
 
     const result = await creditsService.useCredits({
       walletAddress: input.walletAddress,
       amount: input.amount,
       positionAddress: input.positionAddress,
-      description: input.description || `Reposition for position ${input.positionAddress.slice(0, 8)}...`,
+      relatedResourceId: input.relatedResourceId || input.description,
+      description: input.description || (input.positionAddress
+        ? `Reposition for position ${input.positionAddress.slice(0, 8)}...`
+        : 'General credit usage'),
     });
 
     return {

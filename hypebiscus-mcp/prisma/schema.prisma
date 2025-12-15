@@ -387,3 +387,21 @@ model position_transactions {
   @@index([timestamp(sort: Desc)], map: "idx_tx_timestamp")
   @@index([signature], map: "idx_tx_signature")
 }
+
+/// Auto-reposition notifications for website users
+model reposition_notifications {
+  id          String    @id @default(dbgenerated("gen_random_uuid()"))
+  userId      String    @map("user_id")
+  walletAddress String  @map("wallet_address")
+  positionId  String    @map("position_id")
+  type        String    @map("type") // 'reposition_needed', 'insufficient_credits', 'reposition_success', 'reposition_failed'
+  message     String    @map("message")
+  metadata    String?   @map("metadata") // JSON string with additional data
+  isRead      Boolean   @default(false) @map("is_read")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  readAt      DateTime? @map("read_at")
+
+  @@index([userId, isRead, createdAt(sort: Desc)], map: "idx_user_notifications")
+  @@index([walletAddress, createdAt(sort: Desc)], map: "idx_wallet_notifications")
+  @@index([positionId], map: "idx_position_notifications")
+}
