@@ -19,14 +19,14 @@ export class ValidationError extends Error {
   }
 }
 
-export function validateChatRequest(body: unknown): ChatRequestBody {
-  if (!body || typeof body !== 'object') {
-    throw new ValidationError('Invalid request body')
-  }
+// ============================================================================
+// Chat Request Validation Helper Functions
+// ============================================================================
 
-  const { messages, poolData, portfolioStyle, walletAddress } = body as Record<string, unknown>
-
-  // Validate messages array
+/**
+ * Validate messages array structure and count
+ */
+function validateMessagesArray(messages: unknown, poolData?: unknown): void {
   if (!messages || !Array.isArray(messages)) {
     throw new ValidationError('Messages must be an array', 'messages')
   }
@@ -39,76 +39,127 @@ export function validateChatRequest(body: unknown): ChatRequestBody {
   if (messages.length > 50) {
     throw new ValidationError('Too many messages. Maximum 50 messages allowed', 'messages')
   }
+}
 
-  // Validate each message (skip if empty array)
-  for (let i = 0; i < messages.length; i++) {
-    const message = messages[i]
-    
-    if (!message || typeof message !== 'object') {
-      throw new ValidationError(`Message at index ${i} is invalid`, 'messages')
-    }
+/**
+ * Validate a single message structure and content
+ */
+function validateSingleMessage(message: unknown, index: number): void {
+  if (!message || typeof message !== 'object') {
+    throw new ValidationError(`Message at index ${index} is invalid`, 'messages')
+  }
 
-    if (!message.role || !['user', 'assistant'].includes(message.role)) {
-      throw new ValidationError(`Message at index ${i} has invalid role`, 'messages')
-    }
+  const msg = message as Record<string, unknown>
 
-    if (typeof message.content !== 'string') {
-      throw new ValidationError(`Message at index ${i} content must be a string`, 'messages')
-    }
+  // Validate role
+  if (!msg.role || !['user', 'assistant'].includes(msg.role as string)) {
+    throw new ValidationError(`Message at index ${index} has invalid role`, 'messages')
+  }
 
-    if (message.content.length === 0) {
-      throw new ValidationError(`Message at index ${i} content cannot be empty`, 'messages')
-    }
+  // Validate content type
+  if (typeof msg.content !== 'string') {
+    throw new ValidationError(`Message at index ${index} content must be a string`, 'messages')
+  }
 
-    if (message.content.length > 10000) {
-      throw new ValidationError(`Message at index ${i} content too long. Maximum 10,000 characters allowed`, 'messages')
-    }
+  // Validate content not empty
+  if (msg.content.length === 0) {
+    throw new ValidationError(`Message at index ${index} content cannot be empty`, 'messages')
+  }
 
-    // Basic XSS prevention - reject obvious script tags
-    if (/<script|javascript:|on\w+\s*=/i.test(message.content)) {
-      throw new ValidationError(`Message at index ${i} contains potentially malicious content`, 'messages')
+  // Validate content length
+  if (msg.content.length > 10000) {
+    throw new ValidationError(`Message at index ${index} content too long. Maximum 10,000 characters allowed`, 'messages')
+  }
+
+  // Basic XSS prevention - reject obvious script tags
+  if (/<script|javascript:|on\w+\s*=/i.test(msg.content)) {
+    throw new ValidationError(`Message at index ${index} contains potentially malicious content`, 'messages')
+  }
+}
+
+/**
+ * Validate portfolio style parameter
+ */
+function validatePortfolioStyle(portfolioStyle: unknown): void {
+  if (portfolioStyle === undefined) {
+    return
+  }
+
+  if (typeof portfolioStyle !== 'string') {
+    throw new ValidationError('Portfolio style must be a string', 'portfolioStyle')
+  }
+
+  if (portfolioStyle.length > 100) {
+    throw new ValidationError('Portfolio style too long. Maximum 100 characters allowed', 'portfolioStyle')
+  }
+}
+
+/**
+ * Validate pool data parameter
+ */
+function validatePoolData(poolData: unknown): void {
+  if (poolData === undefined) {
+    return
+  }
+
+  if (typeof poolData !== 'object' || poolData === null) {
+    throw new ValidationError('Pool data must be an object', 'poolData')
+  }
+
+  // Convert to string to check serialized size
+  const poolDataString = JSON.stringify(poolData)
+  if (poolDataString.length > 50000) {
+    throw new ValidationError('Pool data too large. Maximum 50KB allowed', 'poolData')
+  }
+}
+
+/**
+ * Validate Solana wallet address
+ */
+function validateWalletAddress(walletAddress: unknown): void {
+  if (walletAddress === undefined) {
+    return
+  }
+
+  if (typeof walletAddress !== 'string') {
+    throw new ValidationError('Wallet address must be a string', 'walletAddress')
+  }
+
+  // Basic Solana address validation (32-44 characters, base58)
+  if (walletAddress.length < 32 || walletAddress.length > 44) {
+    throw new ValidationError('Invalid wallet address length', 'walletAddress')
+  }
+
+  if (!/^[1-9A-HJ-NP-Za-km-z]+$/.test(walletAddress)) {
+    throw new ValidationError('Invalid wallet address format', 'walletAddress')
+  }
+}
+
+/**
+ * Main chat request validation function
+ * Validates all required and optional parameters for chat API
+ */
+export function validateChatRequest(body: unknown): ChatRequestBody {
+  if (!body || typeof body !== 'object') {
+    throw new ValidationError('Invalid request body')
+  }
+
+  const { messages, poolData, portfolioStyle, walletAddress } = body as Record<string, unknown>
+
+  // Validate messages array
+  validateMessagesArray(messages, poolData)
+
+  // Validate each individual message
+  if (Array.isArray(messages)) {
+    for (let i = 0; i < messages.length; i++) {
+      validateSingleMessage(messages[i], i)
     }
   }
 
-  // Validate portfolioStyle if provided
-  if (portfolioStyle !== undefined) {
-    if (typeof portfolioStyle !== 'string') {
-      throw new ValidationError('Portfolio style must be a string', 'portfolioStyle')
-    }
-    
-    if (portfolioStyle.length > 100) {
-      throw new ValidationError('Portfolio style too long. Maximum 100 characters allowed', 'portfolioStyle')
-    }
-  }
-
-  // Validate poolData if provided (basic validation)
-  if (poolData !== undefined) {
-    if (typeof poolData !== 'object' || poolData === null) {
-      throw new ValidationError('Pool data must be an object', 'poolData')
-    }
-
-    // Convert to string to check serialized size
-    const poolDataString = JSON.stringify(poolData)
-    if (poolDataString.length > 50000) {
-      throw new ValidationError('Pool data too large. Maximum 50KB allowed', 'poolData')
-    }
-  }
-
-  // Validate walletAddress if provided (for premium features)
-  if (walletAddress !== undefined) {
-    if (typeof walletAddress !== 'string') {
-      throw new ValidationError('Wallet address must be a string', 'walletAddress')
-    }
-
-    // Basic Solana address validation (32-44 characters, base58)
-    if (walletAddress.length < 32 || walletAddress.length > 44) {
-      throw new ValidationError('Invalid wallet address length', 'walletAddress')
-    }
-
-    if (!/^[1-9A-HJ-NP-Za-km-z]+$/.test(walletAddress)) {
-      throw new ValidationError('Invalid wallet address format', 'walletAddress')
-    }
-  }
+  // Validate optional parameters
+  validatePortfolioStyle(portfolioStyle)
+  validatePoolData(poolData)
+  validateWalletAddress(walletAddress)
 
   return {
     messages: messages as ChatMessage[],
