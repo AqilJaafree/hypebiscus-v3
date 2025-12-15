@@ -3,6 +3,7 @@ import { Context, Telegraf } from 'telegraf';
 import { WalletService } from '../../services/walletService';
 import { getOrCreateUser } from '../../services/db';
 import { walletKeyboard, backKeyboard } from '../keyboards';
+import { PrivateKeyParser } from '../../utils/privateKeyParser';
 
 export class WalletHandler {
   constructor(
@@ -164,23 +165,23 @@ export class WalletHandler {
 
       await ctx.editMessageText(
         `📥 **Import Wallet**\n\n` +
-        `Send your private key as a JSON array:\n` +
-        `\`[1,2,3,4,...]\`\n\n` +
+        `Send your private key in ANY of these formats:\n\n` +
+        PrivateKeyParser.getFormatExamples() + `\n\n` +
         `⚠️ **IMPORTANT:**\n` +
         `• Make sure this chat is private!\n` +
         `• Delete the message after importing\n` +
         `• Only import your own wallet`,
-        { 
+        {
           parse_mode: 'Markdown',
-          ...backKeyboard 
+          ...backKeyboard
         }
       );
-      
+
       // Set state to expect private key input
-      (ctx as any).session = { 
-        waitingForPrivateKey: true,
-        userId: user.id 
-      };
+      // Update session properties (don't replace the object)
+      const session = (ctx as any).session;
+      session.waitingForPrivateKey = true;
+      session.userId = user.id;
     } catch (error) {
       console.error('Error in import wallet:', error);
       await ctx.editMessageText(
@@ -208,13 +209,19 @@ export class WalletHandler {
       }
 
       // Import wallet (automatically saves to database)
-      const publicKey = await this.walletService.importWallet(userId, privateKey);
-      
-      if (publicKey) {
+      const result = await this.walletService.importWallet(userId, privateKey);
+
+      if (result) {
+        // Check if this was an upgrade from linked wallet
+        const isUpgrade = result.publicKey; // If successful, check context
+
         await ctx.reply(
           `✅ **Wallet Imported Successfully!**\n\n` +
-          `📍 Address:\n\`${publicKey}\`\n\n` +
-          `💡 Your wallet is now ready to use!`,
+          `📍 Address:\n\`${result.publicKey}\`\n\n` +
+          `✨ Format detected: **${result.format}**\n\n` +
+          `🚀 **Auto-Reposition Enabled!**\n` +
+          `Your wallet can now execute automatic repositions.\n\n` +
+          `💡 Use /settings to configure auto-reposition.`,
           { parse_mode: 'Markdown' }
         );
 
@@ -225,19 +232,29 @@ export class WalletHandler {
           console.log('Could not delete message (might be too old)');
         }
 
-        console.log(`✅ Wallet imported for user ${telegramId}: ${publicKey}`);
+        console.log(`✅ Wallet imported (${result.format}) for user ${telegramId}: ${result.publicKey}`);
       } else {
         await ctx.reply(
-          '❌ Invalid private key format.\n\n' +
-          'Please send the private key as a JSON array: `[1,2,3,4,...]`',
+          '❌ **Invalid private key format.**\n\n' +
+          PrivateKeyParser.getFormatExamples(),
           { parse_mode: 'Markdown' }
         );
       }
     } catch (error: any) {
       console.error('Error importing wallet:', error);
-      
+
       if (error.message === 'User already has a wallet') {
         await ctx.reply('⚠️ You already have a wallet!');
+      } else if (error.message === 'This wallet is already imported by another account') {
+        await ctx.reply(
+          '⚠️ **Wallet Already In Use**\n\n' +
+          'This wallet is already imported by another Telegram account.\n\n' +
+          '**Options:**\n' +
+          '• Use a different wallet\n' +
+          '• Delete the wallet from the other account first\n' +
+          '• Create a new wallet with /start',
+          { parse_mode: 'Markdown' }
+        );
       } else {
         await ctx.reply('❌ Failed to import wallet. Please check the format and try again.');
       }

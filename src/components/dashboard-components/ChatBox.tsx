@@ -22,12 +22,14 @@ import ChatMessage from "@/components/chat-message";
 import ChatInput from "@/components/chat-input";
 import JupiterPlugin from "@/components/JupiterPlugin"; // Changed from JupiterTerminal
 import { fetchMessage } from "@/lib/api/chat";
+import { fetchPremiumMessage } from "@/lib/api/premiumChat";
 import { FormattedPool, formatPool, getPreferredBinSteps } from '@/lib/utils/poolUtils';
 import { useErrorHandler } from '@/lib/utils/errorHandling';
 import { usePoolSearchService } from '@/lib/services/poolSearchService';
 import { usePaymentVerification } from '@/hooks/usePaymentVerification';
 import { mcpClient } from '@/lib/services/mcpClient';
 import { CreditsPurchaseModal } from '@/components/mcp-components/CreditsPurchaseModal';
+import { CreditBalanceIndicator } from './CreditBalanceIndicator';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useRouter } from 'next/navigation';
 import { showToast } from '@/lib/utils/showToast';
@@ -162,6 +164,17 @@ const ChatBox: React.FC = () => {
       /rebalance.*automatic/i,
       /set.*up.*automation/i,
     ],
+    // NEW: Premium Deep Analysis (requires credits/subscription)
+    premiumAnalysis: [
+      /deep.*analys/i,
+      /detailed.*analys/i,
+      /thorough.*analys/i,
+      /expert.*analys/i,
+      /premium.*analys/i,
+      /advanced.*analys/i,
+      /in[- ]?depth.*analys/i,
+      /comprehensive.*analys/i,
+    ],
   }), []);
 
   // Core message management
@@ -255,6 +268,11 @@ const ChatBox: React.FC = () => {
       pattern.test(lowerMessage)
     );
 
+    // Check for premium analysis requests (requires credits/subscription)
+    const isPremiumAnalysis = MESSAGE_PATTERNS.premiumAnalysis.some(pattern =>
+      pattern.test(lowerMessage)
+    );
+
     return {
       isEducational,
       isPoolRequest,
@@ -263,7 +281,8 @@ const ChatBox: React.FC = () => {
       isPoolMetricsQuery,
       isMCPDataQuery,
       isAutomationQuery,
-      isGeneralChat: !isEducational && !isPoolRequest && !isAlternativeRequest && !isSwapRequest && !isPoolMetricsQuery && !isMCPDataQuery && !isAutomationQuery
+      isPremiumAnalysis,
+      isGeneralChat: !isEducational && !isPoolRequest && !isAlternativeRequest && !isSwapRequest && !isPoolMetricsQuery && !isMCPDataQuery && !isAutomationQuery && !isPremiumAnalysis
     };
   }, [MESSAGE_PATTERNS]);
 
@@ -350,9 +369,13 @@ const ChatBox: React.FC = () => {
 
       if (positionsData.positions && positionsData.positions.length > 0) {
         const summary = `✅ You have **${positionsData.positions.length}** active position${positionsData.positions.length > 1 ? 's' : ''}:\n\n${positionsData.positions
-          .map((pos: { poolAddress: string; totalValueUSD: number }, idx: number) =>
-            `${idx + 1}. Pool: \`${pos.poolAddress.substring(0, 8)}...\` - Value: $${pos.totalValueUSD.toFixed(2)}`
-          )
+          .map((pos: { poolAddress: string; totalValueUSD?: number; positionId?: string }, idx: number) => {
+            const value = pos.totalValueUSD !== undefined && pos.totalValueUSD !== null
+              ? `$${pos.totalValueUSD.toFixed(2)}`
+              : 'Calculating...';
+            const posId = pos.positionId ? pos.positionId.substring(0, 8) : pos.poolAddress.substring(0, 8);
+            return `${idx + 1}. Position: \`${posId}...\` - Value: ${value}`;
+          })
           .join('\n')}\n\n💰 **Credit used**: 1 credit${accessResult.creditsRemaining !== undefined ? ` (${accessResult.creditsRemaining} remaining)` : ''}`;
 
         addMessage("assistant", summary);
@@ -369,6 +392,101 @@ const ChatBox: React.FC = () => {
       setIsLoading(false);
     }
   }, [connected, publicKey, verifyAccess, addMessage]);
+
+  // Handle premium deep analysis (requires credits or subscription)
+  const handlePremiumAnalysis = useCallback(async (userMessage: string) => {
+    if (!connected || !publicKey) {
+      addMessage("assistant", "🔐 Please connect your wallet to access premium AI analysis.");
+      return;
+    }
+
+    // Check payment status
+    const accessResult = await verifyAccess({
+      requireCredits: 1,
+      action: 'use premium AI analysis',
+    });
+
+    if (!accessResult.hasAccess) {
+      // No payment - show payment modal
+      setPendingMCPQuery(userMessage);
+      setShowPaymentModal(true);
+      addMessage(
+        "assistant",
+        `💎 **Premium Deep Analysis** uses our most advanced AI model (Claude Opus 4) for comprehensive insights.\n\n**Cost**: 1 credit ($0.01) per analysis\n**Or**: Premium subscription ($4.99/month) for unlimited analyses\n\nYou'll get:\n✓ Deeper technical analysis\n✓ More detailed risk assessment\n✓ Actionable recommendations\n✓ Advanced market insights\n\nClick below to purchase credits!`
+      );
+      return;
+    }
+
+    // Has access - execute premium analysis
+    try {
+      addMessage("assistant", "✨ Analyzing with premium AI (Claude Opus 4)...");
+      setIsLoading(true);
+
+      const walletAddress = publicKey.toBase58();
+      const messageHistory = [
+        ...messages,
+        {
+          role: "user" as const,
+          content: userMessage,
+          timestamp: new Date(),
+        },
+      ];
+
+      // Start streaming premium response
+      addMessage("assistant", "", undefined);
+      setStreamingMessage("");
+      setIsStreaming(true);
+
+      const premiumResponse = await fetchPremiumMessage(
+        messageHistory,
+        walletAddress,
+        undefined,
+        selectedPortfolioStyle || undefined,
+        (chunk) => {
+          setStreamingMessage((prev) => (prev || "") + chunk);
+        }
+      );
+
+      // Update the placeholder message with the full response
+      setMessages((prev) => {
+        const newMessages = [...prev];
+        newMessages[newMessages.length - 1].content = premiumResponse;
+        return newMessages;
+      });
+
+      setMessageWithPools((prev) => {
+        const newMessages = [...prev];
+        newMessages[newMessages.length - 1].message.content = premiumResponse;
+        return newMessages;
+      });
+
+      // Success message
+      const creditsInfo = accessResult.creditsRemaining !== undefined
+        ? ` (${accessResult.creditsRemaining} credits remaining)`
+        : '';
+
+      showToast.success(
+        'Premium Analysis Complete',
+        `1 credit used${creditsInfo}`
+      );
+
+    } catch (error) {
+      console.error('Premium analysis error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      if (errorMessage.includes('Payment required')) {
+        setPendingMCPQuery(userMessage);
+        setShowPaymentModal(true);
+        addMessage("assistant", "💳 Premium analysis requires credits or subscription. Please purchase to continue.");
+      } else {
+        addMessage("assistant", `❌ Premium analysis failed: ${errorMessage}`);
+      }
+    } finally {
+      setStreamingMessage(null);
+      setIsStreaming(false);
+      setIsLoading(false);
+    }
+  }, [connected, publicKey, verifyAccess, addMessage, messages, selectedPortfolioStyle, showToast]);
 
   // Handle automation queries (auto-reposition - linking is FREE, but repositions cost money)
   const handleAutomationQuery = useCallback(async () => {
@@ -789,7 +907,9 @@ const ChatBox: React.FC = () => {
         const intent = analyzeMessageIntent(userMessage);
 
         // Route to appropriate handler based on intent (prioritize paid features)
-        if (intent.isPoolMetricsQuery) {
+        if (intent.isPremiumAnalysis) {
+          await handlePremiumAnalysis(userMessage);
+        } else if (intent.isPoolMetricsQuery) {
           await handlePoolMetricsQuery();
         } else if (intent.isMCPDataQuery) {
           await handleMCPDataQuery(userMessage);
@@ -820,6 +940,7 @@ const ChatBox: React.FC = () => {
       inputMessage,
       addMessage,
       analyzeMessageIntent,
+      handlePremiumAnalysis,
       handlePoolMetricsQuery,
       handleMCPDataQuery,
       handleAutomationQuery,
@@ -1118,6 +1239,129 @@ const ChatBox: React.FC = () => {
     );
   }
 
+  // Helper: Check if message is a pool message
+  function isPoolMessage(message: Message): boolean {
+    return (
+      message.role === "assistant" &&
+      (message.content.includes("Finding the best") ||
+        message.content.includes("Found the optimal") ||
+        /Finding the best \w+ Solana liquidity pools for you/.test(message.content))
+    );
+  }
+
+  // Helper: Calculate message display flags
+  function calculateMessageFlags(
+    item: MessageWithPool,
+    index: number,
+    totalMessages: number,
+    nextMessage?: MessageWithPool,
+    isStreaming?: boolean
+  ) {
+    const poolMsg = isPoolMessage(item.message);
+    const isLast = index === totalMessages - 1;
+    const isAssistant = item.message.role === "assistant";
+
+    return {
+      isPoolMessage: poolMsg,
+      isLoadingState: poolMsg && isLast && (!item.pools || item.pools.length === 0),
+      shouldHideLoadingMessage:
+        poolMsg &&
+        index < totalMessages - 1 &&
+        nextMessage?.pools &&
+        nextMessage.pools.length > 0,
+      isLastMessage: isLast,
+      shouldShowStreaming: isLast && isAssistant && (isStreaming ?? false),
+      showStreamingInPool:
+        isLast && isAssistant && (isStreaming ?? false) && item.pools && item.pools.length > 0,
+      showStreamingInMessage:
+        isLast && isAssistant && (isStreaming ?? false) && (!item.pools || item.pools.length === 0),
+    };
+  }
+
+  // Message item component
+  interface MessageItemProps {
+    item: MessageWithPool;
+    index: number;
+    totalMessages: number;
+    nextMessage?: MessageWithPool;
+    isStreaming: boolean;
+    streamingMessage: string | null;
+    isPoolLoading: boolean;
+    onAddLiquidity: (pool: FormattedPool) => void;
+  }
+
+  function MessageItem({
+    item,
+    index,
+    totalMessages,
+    nextMessage,
+    isStreaming: streaming,
+    streamingMessage: streamMsg,
+    isPoolLoading: poolLoading,
+    onAddLiquidity,
+  }: MessageItemProps) {
+    const flags = calculateMessageFlags(item, index, totalMessages, nextMessage, streaming);
+
+    const shouldShowMessage =
+      !flags.shouldHideLoadingMessage && (flags.isLoadingState || !flags.isPoolMessage);
+
+    const shouldRenderChatMessage =
+      shouldShowMessage && !(item.message.role === "assistant" && item.pools && item.pools.length > 0);
+
+    const shouldShowDivider =
+      item.message.role === "assistant" &&
+      !item.pools &&
+      !flags.isLoadingState &&
+      !flags.showStreamingInMessage;
+
+    return (
+      <React.Fragment>
+        {shouldShowMessage && (
+          <>
+            {shouldRenderChatMessage && (
+              <div className="w-full break-words">
+                <ChatMessage
+                  message={item.message}
+                  streamingMessage={flags.showStreamingInMessage ? streamMsg : undefined}
+                  isStreaming={flags.showStreamingInMessage}
+                />
+              </div>
+            )}
+            {shouldShowDivider && <hr className="mt-6 mb-10 border-border" />}
+          </>
+        )}
+        {item.pools && item.pools.length > 0 && (
+          <div className="w-full">
+            {flags.showStreamingInPool ? (
+              <BtcPoolsList
+                pools={item.pools}
+                onAddLiquidity={onAddLiquidity}
+                isLoading={poolLoading}
+                aiResponse={item.message.content}
+                aiResponsePart1=""
+                aiResponsePart2=""
+                isStreaming={true}
+                streamingContent={streamMsg}
+              />
+            ) : (
+              <BtcPoolsList
+                pools={item.pools}
+                onAddLiquidity={onAddLiquidity}
+                isLoading={poolLoading}
+                aiResponse={item.message.content}
+                aiResponsePart1={splitAIResponse(item.message.content).part1}
+                aiResponsePart2={splitAIResponse(item.message.content).part2}
+                isStreaming={false}
+                streamingContent={null}
+              />
+            )}
+            <hr className="mt-12 mb-8 border-border" />
+          </div>
+        )}
+      </React.Fragment>
+    );
+  }
+
 return (
   <div className="flex flex-col h-[calc(100vh-100px)] max-w-4xl mx-auto">
     <div className="flex justify-between items-center mb-6 flex-wrap">
@@ -1130,8 +1374,11 @@ return (
         />
       </div>
       
-      {/* Right side - Portfolio, Jupiter, and Refresh buttons */}
+      {/* Right side - Portfolio, Jupiter, Credits, and Refresh buttons */}
       <div className="flex items-center lg:gap-2 gap-1 flex-shrink-0">
+        {/* Credit Balance Indicator */}
+        <CreditBalanceIndicator onPurchaseClick={() => setShowPaymentModal(true)} />
+
         {/* Jupiter Plugin Button */}
         <Button
           variant="secondary"
@@ -1215,91 +1462,19 @@ return (
     {/* Scrollable chat messages area */}
     <div className="flex-1 overflow-y-auto pb-4 scrollbar-hide">
       <div className="flex flex-col space-y-6">
-        {messageWithPools.map((item, index, array) => {
-          const isPoolMessage =
-            item.message.role === "assistant" &&
-            (item.message.content.includes("Finding the best") ||
-              item.message.content.includes("Found the optimal") ||
-              /Finding the best \w+ Solana liquidity pools for you/.test(
-                item.message.content
-              ));
-
-          const isLoadingState =
-            isPoolMessage &&
-            index === array.length - 1 &&
-            (!item.pools || item.pools.length === 0);
-
-          const shouldHideLoadingMessage =
-            isPoolMessage &&
-            index < array.length - 1 &&
-            array[index + 1].pools &&
-            array[index + 1].pools!.length > 0;
-
-          const isLastMessage = index === array.length - 1;
-          const isAssistantMessage = item.message.role === "assistant";
-          const shouldShowStreaming = isLastMessage && isAssistantMessage && isStreaming;
-          const showStreamingInPool = shouldShowStreaming && item.pools && item.pools.length > 0;
-          const showStreamingInMessage = shouldShowStreaming && (!item.pools || item.pools.length === 0);
-
-          return (
-            <React.Fragment key={index}>
-              {!shouldHideLoadingMessage &&
-                (isLoadingState || !isPoolMessage) && (
-                  <>
-                    {!(item.message.role === "assistant" && item.pools && item.pools.length > 0) && (
-                      <div className="w-full break-words">
-                        <ChatMessage 
-                          message={item.message} 
-                          streamingMessage={showStreamingInMessage ? streamingMessage : undefined}
-                          isStreaming={showStreamingInMessage}
-                        />
-                      </div>
-                    )}
-                    {item.message.role === "assistant" &&
-                      !item.pools &&
-                      !isLoadingState && 
-                      !showStreamingInMessage && <hr className="mt-6 mb-10 border-border" />}
-                  </>
-                )}
-              {item.pools && item.pools.length > 0 && (
-                <div className="w-full">
-                  {(() => {
-                    if (showStreamingInPool) {
-                      return (
-                        <BtcPoolsList
-                          pools={item.pools}
-                          onAddLiquidity={handleAddLiquidity}
-                          isLoading={isPoolLoading}
-                          aiResponse={item.message.content}
-                          aiResponsePart1=""
-                          aiResponsePart2=""
-                          isStreaming={true}
-                          streamingContent={streamingMessage}
-                        />
-                      );
-                    } else {
-                      const { part1, part2 } = splitAIResponse(item.message.content);
-                      return (
-                        <BtcPoolsList
-                          pools={item.pools}
-                          onAddLiquidity={handleAddLiquidity}
-                          isLoading={isPoolLoading}
-                          aiResponse={item.message.content}
-                          aiResponsePart1={part1}
-                          aiResponsePart2={part2}
-                          isStreaming={false}
-                          streamingContent={null}
-                        />
-                      );
-                    }
-                  })()}
-
-                  <hr className="mt-12 mb-8 border-border" />
-                </div>
-              )}
-            </React.Fragment>
-          );
-        })}
+        {messageWithPools.map((item, index, array) => (
+          <MessageItem
+            key={index}
+            item={item}
+            index={index}
+            totalMessages={array.length}
+            nextMessage={array[index + 1]}
+            isStreaming={isStreaming}
+            streamingMessage={streamingMessage}
+            isPoolLoading={isPoolLoading}
+            onAddLiquidity={handleAddLiquidity}
+          />
+        ))}
         <div ref={messagesEndRef} />
       </div>
     </div>

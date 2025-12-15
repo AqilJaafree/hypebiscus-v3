@@ -10,6 +10,7 @@
 import http from 'http';
 import { spawn, ChildProcess } from 'child_process';
 import { logger } from './config.js';
+import { autoRepositionWorker } from './workers/autoRepositionWorker.js';
 
 interface MCPRequest {
   jsonrpc: string;
@@ -154,7 +155,7 @@ class MCPHttpBridge {
       const timeout = setTimeout(() => {
         this.requestQueue.delete(request.id);
         reject(new Error('MCP request timeout'));
-      }, 30000); // 30 second timeout
+      }, 120000); // 120 second timeout (2 minutes) for blockchain sync operations
 
       this.requestQueue.set(request.id, { resolve, reject, timeout });
 
@@ -289,6 +290,11 @@ class MCPHttpBridge {
         logger.info(`Health check: http://localhost:${this.port}/`);
         logger.info(`Ready to accept requests from Next.js`);
       });
+
+      // Start auto-reposition worker (runs every 10 minutes)
+      logger.info('Starting auto-reposition worker...');
+      autoRepositionWorker.start(10);
+      logger.info('Auto-reposition worker started (interval: 10 minutes)');
     } catch (error) {
       logger.error('Failed to start HTTP bridge:', error);
       throw error;
@@ -300,6 +306,10 @@ class MCPHttpBridge {
    */
   async shutdown(): Promise<void> {
     logger.info('Shutting down HTTP bridge...');
+
+    // Stop auto-reposition worker
+    logger.info('Stopping auto-reposition worker...');
+    autoRepositionWorker.stop();
 
     // Close HTTP server
     if (this.server) {

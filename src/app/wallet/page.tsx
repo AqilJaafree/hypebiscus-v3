@@ -46,6 +46,9 @@ import { ViewToggle } from "./components/ViewToggle";
 import { PositionsList } from "./components/PositionsList";
 import { TelegramLinkTab } from "./components/TelegramLinkTab";
 import { ErrorMessage } from "./components/ErrorMessage";
+import { SyncPositionsButton } from "./components/SyncPositionsButton";
+import { CreditGateAlert } from "./components/CreditGateAlert";
+import { AutoRepositionAlert } from "./components/AutoRepositionAlert";
 import {
   NoPositionsState,
   WalletNotConnectedState,
@@ -771,9 +774,28 @@ const WalletPage = () => {
           ) : (
             <>
               {/* View Toggle Title - positions tab */}
-              <div className="flex justify-between mb-4">
+              <div className="flex justify-between items-center mb-4">
                 <h1 className="text-2xl font-bold">Your Positions</h1>
+                {connected && publicKey && (
+                  <SyncPositionsButton
+                    walletAddress={publicKey.toBase58()}
+                    onSyncComplete={refreshPositions}
+                  />
+                )}
               </div>
+
+              {/* Credit Gate Alert */}
+              {connected && (
+                <CreditGateAlert
+                  show={connected}
+                  positionCount={positionsArray.length}
+                />
+              )}
+
+              {/* Auto-Reposition Alert - Direct users to Telegram for full automation */}
+              {connected && positionsArray.length > 0 && (
+                <AutoRepositionAlert show={connected} />
+              )}
 
               {/* Error Message */}
               <ErrorMessage error={error} />

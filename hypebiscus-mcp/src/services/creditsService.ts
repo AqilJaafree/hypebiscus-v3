@@ -30,8 +30,9 @@ interface PurchaseCreditsInput {
 interface UseCreditsInput {
   walletAddress: string;
   amount: number; // Credits to deduct
-  positionAddress: string;
-  description: string;
+  positionAddress?: string; // Optional - for reposition operations
+  description?: string; // Optional - description of usage
+  relatedResourceId?: string; // Optional - for non-position operations (queries, analysis, etc.)
 }
 
 interface CreditBalance {
@@ -188,8 +189,8 @@ class CreditsService {
             amount: -input.amount, // Negative for usage
             balanceBefore: currentBalance.balance,
             balanceAfter: newBalance,
-            description: input.description,
-            relatedResourceId: input.positionAddress,
+            description: input.description || 'Credit usage',
+            relatedResourceId: input.relatedResourceId || input.positionAddress,
           },
         });
 

@@ -170,7 +170,7 @@ export class MCPClient {
 
   constructor(config: MCPClientConfig = {}) {
     this.apiUrl = config.apiUrl || '/api/mcp';
-    this.timeout = config.timeout || 30000;
+    this.timeout = config.timeout || 120000; // 120 seconds (2 minutes) for blockchain sync operations
   }
 
   /**

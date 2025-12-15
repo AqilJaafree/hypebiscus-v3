@@ -9,6 +9,7 @@ export interface ChatRequestBody {
   messages: ChatMessage[]
   poolData?: Record<string, unknown>
   portfolioStyle?: string
+  walletAddress?: string
 }
 
 export class ValidationError extends Error {
@@ -18,14 +19,14 @@ export class ValidationError extends Error {
   }
 }
 
-export function validateChatRequest(body: unknown): ChatRequestBody {
-  if (!body || typeof body !== 'object') {
-    throw new ValidationError('Invalid request body')
-  }
+// ============================================================================
+// Chat Request Validation Helper Functions
+// ============================================================================
 
-  const { messages, poolData, portfolioStyle } = body as Record<string, unknown>
-
-  // Validate messages array
+/**
+ * Validate messages array structure and count
+ */
+function validateMessagesArray(messages: unknown, poolData?: unknown): void {
   if (!messages || !Array.isArray(messages)) {
     throw new ValidationError('Messages must be an array', 'messages')
   }
@@ -38,65 +39,133 @@ export function validateChatRequest(body: unknown): ChatRequestBody {
   if (messages.length > 50) {
     throw new ValidationError('Too many messages. Maximum 50 messages allowed', 'messages')
   }
+}
 
-  // Validate each message (skip if empty array)
-  for (let i = 0; i < messages.length; i++) {
-    const message = messages[i]
-    
-    if (!message || typeof message !== 'object') {
-      throw new ValidationError(`Message at index ${i} is invalid`, 'messages')
-    }
+/**
+ * Validate a single message structure and content
+ */
+function validateSingleMessage(message: unknown, index: number): void {
+  if (!message || typeof message !== 'object') {
+    throw new ValidationError(`Message at index ${index} is invalid`, 'messages')
+  }
 
-    if (!message.role || !['user', 'assistant'].includes(message.role)) {
-      throw new ValidationError(`Message at index ${i} has invalid role`, 'messages')
-    }
+  const msg = message as Record<string, unknown>
 
-    if (typeof message.content !== 'string') {
-      throw new ValidationError(`Message at index ${i} content must be a string`, 'messages')
-    }
+  // Validate role
+  if (!msg.role || !['user', 'assistant'].includes(msg.role as string)) {
+    throw new ValidationError(`Message at index ${index} has invalid role`, 'messages')
+  }
 
-    if (message.content.length === 0) {
-      throw new ValidationError(`Message at index ${i} content cannot be empty`, 'messages')
-    }
+  // Validate content type
+  if (typeof msg.content !== 'string') {
+    throw new ValidationError(`Message at index ${index} content must be a string`, 'messages')
+  }
 
-    if (message.content.length > 10000) {
-      throw new ValidationError(`Message at index ${i} content too long. Maximum 10,000 characters allowed`, 'messages')
-    }
+  // Validate content not empty
+  if (msg.content.length === 0) {
+    throw new ValidationError(`Message at index ${index} content cannot be empty`, 'messages')
+  }
 
-    // Basic XSS prevention - reject obvious script tags
-    if (/<script|javascript:|on\w+\s*=/i.test(message.content)) {
-      throw new ValidationError(`Message at index ${i} contains potentially malicious content`, 'messages')
+  // Validate content length
+  if (msg.content.length > 10000) {
+    throw new ValidationError(`Message at index ${index} content too long. Maximum 10,000 characters allowed`, 'messages')
+  }
+
+  // Basic XSS prevention - reject obvious script tags
+  if (/<script|javascript:|on\w+\s*=/i.test(msg.content)) {
+    throw new ValidationError(`Message at index ${index} contains potentially malicious content`, 'messages')
+  }
+}
+
+/**
+ * Validate portfolio style parameter
+ */
+function validatePortfolioStyle(portfolioStyle: unknown): void {
+  if (portfolioStyle === undefined) {
+    return
+  }
+
+  if (typeof portfolioStyle !== 'string') {
+    throw new ValidationError('Portfolio style must be a string', 'portfolioStyle')
+  }
+
+  if (portfolioStyle.length > 100) {
+    throw new ValidationError('Portfolio style too long. Maximum 100 characters allowed', 'portfolioStyle')
+  }
+}
+
+/**
+ * Validate pool data parameter
+ */
+function validatePoolData(poolData: unknown): void {
+  if (poolData === undefined) {
+    return
+  }
+
+  if (typeof poolData !== 'object' || poolData === null) {
+    throw new ValidationError('Pool data must be an object', 'poolData')
+  }
+
+  // Convert to string to check serialized size
+  const poolDataString = JSON.stringify(poolData)
+  if (poolDataString.length > 50000) {
+    throw new ValidationError('Pool data too large. Maximum 50KB allowed', 'poolData')
+  }
+}
+
+/**
+ * Validate Solana wallet address
+ */
+function validateWalletAddress(walletAddress: unknown): void {
+  if (walletAddress === undefined) {
+    return
+  }
+
+  if (typeof walletAddress !== 'string') {
+    throw new ValidationError('Wallet address must be a string', 'walletAddress')
+  }
+
+  // Basic Solana address validation (32-44 characters, base58)
+  if (walletAddress.length < 32 || walletAddress.length > 44) {
+    throw new ValidationError('Invalid wallet address length', 'walletAddress')
+  }
+
+  if (!/^[1-9A-HJ-NP-Za-km-z]+$/.test(walletAddress)) {
+    throw new ValidationError('Invalid wallet address format', 'walletAddress')
+  }
+}
+
+/**
+ * Main chat request validation function
+ * Validates all required and optional parameters for chat API
+ */
+export function validateChatRequest(body: unknown): ChatRequestBody {
+  if (!body || typeof body !== 'object') {
+    throw new ValidationError('Invalid request body')
+  }
+
+  const { messages, poolData, portfolioStyle, walletAddress } = body as Record<string, unknown>
+
+  // Validate messages array
+  validateMessagesArray(messages, poolData)
+
+  // Validate each individual message
+  if (Array.isArray(messages)) {
+    for (let i = 0; i < messages.length; i++) {
+      validateSingleMessage(messages[i], i)
     }
   }
 
-  // Validate portfolioStyle if provided
-  if (portfolioStyle !== undefined) {
-    if (typeof portfolioStyle !== 'string') {
-      throw new ValidationError('Portfolio style must be a string', 'portfolioStyle')
-    }
-    
-    if (portfolioStyle.length > 100) {
-      throw new ValidationError('Portfolio style too long. Maximum 100 characters allowed', 'portfolioStyle')
-    }
-  }
+  // Validate optional parameters
+  validatePortfolioStyle(portfolioStyle)
+  validatePoolData(poolData)
+  validateWalletAddress(walletAddress)
 
-  // Validate poolData if provided (basic validation)
-  if (poolData !== undefined) {
-    if (typeof poolData !== 'object' || poolData === null) {
-      throw new ValidationError('Pool data must be an object', 'poolData')
-    }
-
-    // Convert to string to check serialized size
-    const poolDataString = JSON.stringify(poolData)
-    if (poolDataString.length > 50000) {
-      throw new ValidationError('Pool data too large. Maximum 50KB allowed', 'poolData')
-    }
-  }
-
-  return { 
-    messages: messages as ChatMessage[], 
-    poolData: poolData as Record<string, unknown> | undefined, 
-    portfolioStyle: portfolioStyle as string | undefined 
+  return {
+    messages: messages as ChatMessage[],
+    poolData: poolData as Record<string, unknown> | undefined,
+    portfolioStyle: portfolioStyle as string | undefined,
+    walletAddress: walletAddress as string | undefined
   }
 }
 
@@ -133,13 +202,47 @@ export interface MCPRequestBody {
   id: number | string
 }
 
-export function validateMCPRequest(body: unknown): { isValid: boolean; error?: string } {
-  if (!body || typeof body !== 'object') {
-    return { isValid: false, error: 'Invalid request body' };
-  }
+// List of available MCP tools
+// IMPORTANT: This list must match the tools registered in hypebiscus-mcp/src/index.ts
+const AVAILABLE_MCP_TOOLS = [
+  'get_pool_metrics',
+  'get_user_by_wallet',
+  'get_user_positions',
+  'get_wallet_performance',
+  'get_position_details',
+  'get_dlmm_position',
+  'get_bin_distribution',
+  'calculate_rebalance',
+  'get_user_positions_with_sync',
+  'generate_wallet_link_token',
+  'link_wallet_by_short_token',
+  'link_wallet',
+  'get_linked_account',
+  'unlink_wallet',
+  'delete_wallet_completely',
+  'check_subscription',
+  'get_credit_balance',
+  'purchase_credits',
+  'use_credits',
+  'record_execution',
+  'get_reposition_settings',
+  'update_reposition_settings',
+  'analyze_reposition',
+  'prepare_reposition',
+  'get_position_chain',
+  'get_wallet_reposition_stats',
+  'calculate_position_pnl',
+  'close_position',
+  'get_wallet_pnl',
+  'sync_wallet_positions'
+] as const;
 
-  const req = body as Record<string, unknown>;
+const ALLOWED_MCP_METHODS = ['tools/list', 'tools/call'] as const;
 
+/**
+ * Validate JSON-RPC structure (version, method, id)
+ */
+function validateJSONRPCStructure(req: Record<string, unknown>): { isValid: boolean; error?: string } {
   // Validate JSON-RPC version
   if (req.jsonrpc !== '2.0') {
     return { isValid: false, error: 'Invalid JSON-RPC version. Must be "2.0"' };
@@ -150,10 +253,8 @@ export function validateMCPRequest(body: unknown): { isValid: boolean; error?: s
     return { isValid: false, error: 'Method must be a non-empty string' };
   }
 
-  // Validate allowed methods
-  const allowedMethods = ['tools/list', 'tools/call'];
-  if (!allowedMethods.includes(req.method)) {
-    return { isValid: false, error: `Method must be one of: ${allowedMethods.join(', ')}` };
+  if (!ALLOWED_MCP_METHODS.includes(req.method as typeof ALLOWED_MCP_METHODS[number])) {
+    return { isValid: false, error: `Method must be one of: ${ALLOWED_MCP_METHODS.join(', ')}` };
   }
 
   // Validate id
@@ -161,71 +262,87 @@ export function validateMCPRequest(body: unknown): { isValid: boolean; error?: s
     return { isValid: false, error: 'ID must be a number or string' };
   }
 
+  return { isValid: true };
+}
+
+/**
+ * Validate tool name against available tools
+ */
+function validateToolName(name: string): { isValid: boolean; error?: string } {
+  if (!AVAILABLE_MCP_TOOLS.includes(name as typeof AVAILABLE_MCP_TOOLS[number])) {
+    return {
+      isValid: false,
+      error: `Unknown tool: ${name}. Available tools: ${AVAILABLE_MCP_TOOLS.join(', ')}`
+    };
+  }
+  return { isValid: true };
+}
+
+/**
+ * Validate tool arguments structure and size
+ */
+function validateToolArguments(args: unknown): { isValid: boolean; error?: string } {
+  if (args === undefined) {
+    return { isValid: true };
+  }
+
+  if (typeof args !== 'object' || args === null) {
+    return { isValid: false, error: 'Arguments must be an object' };
+  }
+
+  // Check serialized size (max 10KB)
+  const argsString = JSON.stringify(args);
+  if (argsString.length > 10000) {
+    return { isValid: false, error: 'Arguments too large. Maximum 10KB allowed' };
+  }
+
+  return { isValid: true };
+}
+
+/**
+ * Validate params for tools/call method
+ */
+function validateToolsCallParams(params: unknown): { isValid: boolean; error?: string } {
+  if (!params || typeof params !== 'object') {
+    return { isValid: false, error: 'Params required for tools/call method' };
+  }
+
+  const p = params as Record<string, unknown>;
+
+  if (typeof p.name !== 'string' || p.name.length === 0) {
+    return { isValid: false, error: 'Tool name required and must be a non-empty string' };
+  }
+
+  // Validate tool name exists
+  const toolNameResult = validateToolName(p.name);
+  if (!toolNameResult.isValid) {
+    return toolNameResult;
+  }
+
+  // Validate arguments if provided
+  return validateToolArguments(p.arguments);
+}
+
+/**
+ * Main MCP request validation function
+ * Validates JSON-RPC structure and tool-specific parameters
+ */
+export function validateMCPRequest(body: unknown): { isValid: boolean; error?: string } {
+  if (!body || typeof body !== 'object') {
+    return { isValid: false, error: 'Invalid request body' };
+  }
+
+  const req = body as Record<string, unknown>;
+
+  // Validate JSON-RPC structure
+  const structureResult = validateJSONRPCStructure(req);
+  if (!structureResult.isValid) {
+    return structureResult;
+  }
+
   // Validate params for tools/call method
   if (req.method === 'tools/call') {
-    if (!req.params || typeof req.params !== 'object') {
-      return { isValid: false, error: 'Params required for tools/call method' };
-    }
-
-    const params = req.params as Record<string, unknown>;
-
-    if (typeof params.name !== 'string' || params.name.length === 0) {
-      return { isValid: false, error: 'Tool name required and must be a non-empty string' };
-    }
-
-    // Validate tool name is one of the available tools
-    // IMPORTANT: This list must match the tools registered in hypebiscus-mcp/src/index.ts
-    const availableTools = [
-      'get_pool_metrics',
-      'get_user_by_wallet',
-      'get_user_positions',
-      'get_wallet_performance',
-      'get_position_details',
-      'get_dlmm_position',
-      'get_bin_distribution',
-      'calculate_rebalance',
-      'get_user_positions_with_sync',
-      'generate_wallet_link_token',
-      'link_wallet_by_short_token',
-      'link_wallet',
-      'get_linked_account',
-      'unlink_wallet',
-      'delete_wallet_completely',
-      'check_subscription',
-      'get_credit_balance',
-      'purchase_credits',
-      'use_credits',
-      'record_execution',
-      'get_reposition_settings',
-      'update_reposition_settings',
-      'analyze_reposition',
-      'prepare_reposition',
-      'get_position_chain',
-      'get_wallet_reposition_stats',
-      'calculate_position_pnl',
-      'close_position',
-      'get_wallet_pnl'
-    ];
-
-    if (!availableTools.includes(params.name)) {
-      return {
-        isValid: false,
-        error: `Unknown tool: ${params.name}. Available tools: ${availableTools.join(', ')}`
-      };
-    }
-
-    // Validate arguments if provided
-    if (params.arguments !== undefined) {
-      if (typeof params.arguments !== 'object' || params.arguments === null) {
-        return { isValid: false, error: 'Arguments must be an object' };
-      }
-
-      // Check serialized size
-      const argsString = JSON.stringify(params.arguments);
-      if (argsString.length > 10000) {
-        return { isValid: false, error: 'Arguments too large. Maximum 10KB allowed' };
-      }
-    }
+    return validateToolsCallParams(req.params);
   }
 
   return { isValid: true };
