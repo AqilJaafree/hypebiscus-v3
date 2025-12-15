@@ -283,41 +283,14 @@ export class BackgroundSyncService {
   ): Promise<{ updated: number; closed: number }> {
     logger.debug(`Syncing positions for wallet: ${walletAddress}`);
 
-    let updatedCount = 0;
-    let closedCount = 0;
-
     try {
       const publicKey = new PublicKey(walletAddress);
-
-      // Get user's wallet linking info for position tagging
-      const user = await prisma.users.findUnique({
-        where: { id: userId },
-        select: { linkedWalletAddress: true },
-      });
-
-      const linkedWalletAddress = user?.linkedWalletAddress ?? null;
-
-      // Fetch all on-chain positions for this wallet
-      const livePositions = await withRetry(
-        async () => {
-          return await DLMM.getAllLbPairPositionsByUser(this.connection, publicKey);
-        },
-        3,
-        2000
-      );
+      const linkedWalletAddress = await this.getUserLinkedWallet(userId);
+      const livePositions = await this.fetchLivePositions(publicKey);
+      const { zbtcPrice, solPrice } = await this.fetchTokenPrices();
 
       const livePositionIds = new Set<string>();
-
-      // Get current token prices for USD calculations
-      const prices = await priceApi.getMultiplePrices([
-        { symbol: 'zBTC', address: TOKEN_MINTS.zBTC },
-        { symbol: 'SOL', address: TOKEN_MINTS.SOL },
-      ]);
-
-      const zbtcPrice = prices.get('zBTC')?.price ?? 0;
-      const solPrice = prices.get('SOL')?.price ?? 0;
-
-      logger.debug(`Using prices: zBTC=$${zbtcPrice}, SOL=$${solPrice}`);
+      let updatedCount = 0;
 
       // Process each pool's positions
       for (const [poolAddress, positionInfo] of livePositions.entries()) {
@@ -326,115 +299,26 @@ export class BackgroundSyncService {
         const positions = (positionInfo as any).lbPairPositionsData || [];
 
         for (const pos of positions) {
-          try {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const positionId = (pos.publicKey?.toBase58?.() || String(pos.publicKey)) as string;
-            livePositionIds.add(positionId);
-
-            // Extract position data
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const positionData = pos.positionData as any;
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const bins = (positionData?.positionBinData || []) as any[];
-
-            if (bins.length === 0) {
-              logger.debug(`Position ${positionId} has no bins, skipping`);
-              continue;
-            }
-
-            // Calculate token amounts (zBTC: 8 decimals, SOL: 9 decimals)
-            const xAmount =
-              parseFloat(String(positionData.totalXAmount || 0)) / Math.pow(10, 8);
-            const yAmount =
-              parseFloat(String(positionData.totalYAmount || 0)) / Math.pow(10, 9);
-            const xFees = parseFloat(String(positionData.feeX || 0)) / Math.pow(10, 8);
-            const yFees = parseFloat(String(positionData.feeY || 0)) / Math.pow(10, 9);
-
-            // Get bin range
-            const binIds = bins.map((bin) => Number(bin.binId));
-            const minBinId = Math.min(...binIds);
-
-            // Upsert position in database with source and linking info
-            // Calculate deposit value for PnL tracking
-            const depositValueUsd = xAmount * zbtcPrice + yAmount * solPrice;
-
-            await prisma.positions.upsert({
-              where: { positionId },
-              create: {
-                id: `pos-${Date.now()}-${Math.random().toString(36).substring(7)}`,
-                userId,
-                positionId,
-                poolAddress: poolAddressStr,
-                zbtcAmount: xAmount,
-                solAmount: yAmount,
-                entryPrice: zbtcPrice, // Store current price on creation
-                entryBin: minBinId,
-                isActive: true,
-                zbtcFees: xFees,
-                solFees: yFees,
-                source: 'telegram', // Background sync is for Telegram bot wallets
-                linkedWalletAddress, // Link to website wallet if exists
-                createdAt: new Date(),
-                lastChecked: new Date(),
-                // Enhanced PnL tracking fields
-                depositValueUsd,
-                depositTokenXPrice: zbtcPrice,
-                depositTokenYPrice: solPrice,
-              },
-              update: {
-                zbtcAmount: xAmount,
-                solAmount: yAmount,
-                zbtcFees: xFees,
-                solFees: yFees,
-                isActive: true,
-                linkedWalletAddress, // Update link in case it changed
-                lastChecked: new Date(),
-              },
-            });
-
-            updatedCount++;
-          } catch (error) {
-            logger.error(`Error processing position ${pos.publicKey}:`, error);
-          }
+          const result = await this.processPosition(
+            pos,
+            userId,
+            poolAddressStr,
+            linkedWalletAddress,
+            zbtcPrice,
+            solPrice,
+            livePositionIds
+          );
+          if (result) updatedCount++;
         }
       }
 
       // Mark positions that are no longer on-chain as closed
-      const dbPositions = await dbUtils.findPositionsByUserId(userId, false); // Only active
-
-      for (const dbPos of dbPositions) {
-        if (!livePositionIds.has(dbPos.positionId)) {
-          logger.info(`Position ${dbPos.positionId} no longer on-chain, marking as closed`);
-
-          // Calculate final PnL
-          const exitValueUsd =
-            (dbPos.zbtcAmount.toNumber() ?? 0) * zbtcPrice +
-            (dbPos.solAmount.toNumber() ?? 0) * solPrice;
-          const entryValueUsd =
-            (dbPos.zbtcAmount.toNumber() ?? 0) * (dbPos.entryPrice.toNumber() ?? zbtcPrice) +
-            (dbPos.solAmount.toNumber() ?? 0) * solPrice;
-
-          const pnlUsd = exitValueUsd - entryValueUsd;
-          const pnlPercent = entryValueUsd > 0 ? (pnlUsd / entryValueUsd) * 100 : 0;
-
-          await prisma.positions.update({
-            where: { id: dbPos.id },
-            data: {
-              isActive: false,
-              closedAt: new Date(),
-              exitPrice: zbtcPrice,
-              exitBin: dbPos.entryBin, // Use entry bin as fallback
-              zbtcReturned: dbPos.zbtcAmount,
-              solReturned: dbPos.solAmount,
-              pnlUsd,
-              pnlPercent,
-              lastChecked: new Date(),
-            },
-          });
-
-          closedCount++;
-        }
-      }
+      const closedCount = await this.closeInactivePositions(
+        userId,
+        livePositionIds,
+        zbtcPrice,
+        solPrice
+      );
 
       logger.debug(
         `Wallet ${walletAddress}: ${updatedCount} positions updated, ${closedCount} closed`
@@ -445,6 +329,194 @@ export class BackgroundSyncService {
       logger.error(`Failed to sync wallet ${walletAddress}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Get user's linked wallet address
+   */
+  private async getUserLinkedWallet(userId: string): Promise<string | null> {
+    const user = await prisma.users.findUnique({
+      where: { id: userId },
+      select: { linkedWalletAddress: true },
+    });
+    return user?.linkedWalletAddress ?? null;
+  }
+
+  /**
+   * Fetch live positions from blockchain
+   */
+  private async fetchLivePositions(publicKey: PublicKey) {
+    return await withRetry(
+      async () => {
+        return await DLMM.getAllLbPairPositionsByUser(this.connection, publicKey);
+      },
+      3,
+      2000
+    );
+  }
+
+  /**
+   * Fetch current token prices
+   */
+  private async fetchTokenPrices(): Promise<{ zbtcPrice: number; solPrice: number }> {
+    const prices = await priceApi.getMultiplePrices([
+      { symbol: 'zBTC', address: TOKEN_MINTS.zBTC },
+      { symbol: 'SOL', address: TOKEN_MINTS.SOL },
+    ]);
+
+    const zbtcPrice = prices.get('zBTC')?.price ?? 0;
+    const solPrice = prices.get('SOL')?.price ?? 0;
+
+    logger.debug(`Using prices: zBTC=$${zbtcPrice}, SOL=$${solPrice}`);
+    return { zbtcPrice, solPrice };
+  }
+
+  /**
+   * Process a single position and upsert to database
+   */
+  private async processPosition(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    pos: any,
+    userId: string,
+    poolAddress: string,
+    linkedWalletAddress: string | null,
+    zbtcPrice: number,
+    solPrice: number,
+    livePositionIds: Set<string>
+  ): Promise<boolean> {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const positionId = (pos.publicKey?.toBase58?.() || String(pos.publicKey)) as string;
+      livePositionIds.add(positionId);
+
+      // Extract position data
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const positionData = pos.positionData as any;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const bins = (positionData?.positionBinData || []) as any[];
+
+      if (bins.length === 0) {
+        logger.debug(`Position ${positionId} has no bins, skipping`);
+        return false;
+      }
+
+      // Calculate token amounts (zBTC: 8 decimals, SOL: 9 decimals)
+      const xAmount = parseFloat(String(positionData.totalXAmount || 0)) / Math.pow(10, 8);
+      const yAmount = parseFloat(String(positionData.totalYAmount || 0)) / Math.pow(10, 9);
+      const xFees = parseFloat(String(positionData.feeX || 0)) / Math.pow(10, 8);
+      const yFees = parseFloat(String(positionData.feeY || 0)) / Math.pow(10, 9);
+
+      // Get bin range
+      const binIds = bins.map((bin) => Number(bin.binId));
+      const minBinId = Math.min(...binIds);
+
+      // Calculate deposit value for PnL tracking
+      const depositValueUsd = xAmount * zbtcPrice + yAmount * solPrice;
+
+      await prisma.positions.upsert({
+        where: { positionId },
+        create: {
+          id: `pos-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+          userId,
+          positionId,
+          poolAddress,
+          zbtcAmount: xAmount,
+          solAmount: yAmount,
+          entryPrice: zbtcPrice,
+          entryBin: minBinId,
+          isActive: true,
+          zbtcFees: xFees,
+          solFees: yFees,
+          source: 'telegram',
+          linkedWalletAddress,
+          createdAt: new Date(),
+          lastChecked: new Date(),
+          depositValueUsd,
+          depositTokenXPrice: zbtcPrice,
+          depositTokenYPrice: solPrice,
+        },
+        update: {
+          zbtcAmount: xAmount,
+          solAmount: yAmount,
+          zbtcFees: xFees,
+          solFees: yFees,
+          isActive: true,
+          linkedWalletAddress,
+          lastChecked: new Date(),
+        },
+      });
+
+      return true;
+    } catch (error) {
+      logger.error(`Error processing position ${pos.publicKey}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Close positions that are no longer on-chain
+   */
+  private async closeInactivePositions(
+    userId: string,
+    livePositionIds: Set<string>,
+    zbtcPrice: number,
+    solPrice: number
+  ): Promise<number> {
+    const dbPositions = await dbUtils.findPositionsByUserId(userId, false); // Only active
+    let closedCount = 0;
+
+    for (const dbPos of dbPositions) {
+      if (!livePositionIds.has(dbPos.positionId)) {
+        logger.info(`Position ${dbPos.positionId} no longer on-chain, marking as closed`);
+
+        const { pnlUsd, pnlPercent } = this.calculateClosePnL(
+          dbPos,
+          zbtcPrice,
+          solPrice
+        );
+
+        await prisma.positions.update({
+          where: { id: dbPos.id },
+          data: {
+            isActive: false,
+            closedAt: new Date(),
+            exitPrice: zbtcPrice,
+            exitBin: dbPos.entryBin,
+            zbtcReturned: dbPos.zbtcAmount,
+            solReturned: dbPos.solAmount,
+            pnlUsd,
+            pnlPercent,
+            lastChecked: new Date(),
+          },
+        });
+
+        closedCount++;
+      }
+    }
+
+    return closedCount;
+  }
+
+  /**
+   * Calculate PnL for closed position
+   */
+  private calculateClosePnL(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    dbPos: any,
+    zbtcPrice: number,
+    solPrice: number
+  ): { pnlUsd: number; pnlPercent: number } {
+    const exitValueUsd =
+      (dbPos.zbtcAmount.toNumber() ?? 0) * zbtcPrice +
+      (dbPos.solAmount.toNumber() ?? 0) * solPrice;
+    const entryValueUsd =
+      (dbPos.zbtcAmount.toNumber() ?? 0) * (dbPos.entryPrice.toNumber() ?? zbtcPrice) +
+      (dbPos.solAmount.toNumber() ?? 0) * solPrice;
+
+    const pnlUsd = exitValueUsd - entryValueUsd;
+    const pnlPercent = entryValueUsd > 0 ? (pnlUsd / entryValueUsd) * 100 : 0;
+
+    return { pnlUsd, pnlPercent };
   }
 
   /**
