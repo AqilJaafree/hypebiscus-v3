@@ -1239,6 +1239,129 @@ const ChatBox: React.FC = () => {
     );
   }
 
+  // Helper: Check if message is a pool message
+  function isPoolMessage(message: Message): boolean {
+    return (
+      message.role === "assistant" &&
+      (message.content.includes("Finding the best") ||
+        message.content.includes("Found the optimal") ||
+        /Finding the best \w+ Solana liquidity pools for you/.test(message.content))
+    );
+  }
+
+  // Helper: Calculate message display flags
+  function calculateMessageFlags(
+    item: MessageWithPool,
+    index: number,
+    totalMessages: number,
+    nextMessage?: MessageWithPool,
+    isStreaming?: boolean
+  ) {
+    const poolMsg = isPoolMessage(item.message);
+    const isLast = index === totalMessages - 1;
+    const isAssistant = item.message.role === "assistant";
+
+    return {
+      isPoolMessage: poolMsg,
+      isLoadingState: poolMsg && isLast && (!item.pools || item.pools.length === 0),
+      shouldHideLoadingMessage:
+        poolMsg &&
+        index < totalMessages - 1 &&
+        nextMessage?.pools &&
+        nextMessage.pools.length > 0,
+      isLastMessage: isLast,
+      shouldShowStreaming: isLast && isAssistant && (isStreaming ?? false),
+      showStreamingInPool:
+        isLast && isAssistant && (isStreaming ?? false) && item.pools && item.pools.length > 0,
+      showStreamingInMessage:
+        isLast && isAssistant && (isStreaming ?? false) && (!item.pools || item.pools.length === 0),
+    };
+  }
+
+  // Message item component
+  interface MessageItemProps {
+    item: MessageWithPool;
+    index: number;
+    totalMessages: number;
+    nextMessage?: MessageWithPool;
+    isStreaming: boolean;
+    streamingMessage: string | null;
+    isPoolLoading: boolean;
+    onAddLiquidity: (pool: FormattedPool) => void;
+  }
+
+  function MessageItem({
+    item,
+    index,
+    totalMessages,
+    nextMessage,
+    isStreaming: streaming,
+    streamingMessage: streamMsg,
+    isPoolLoading: poolLoading,
+    onAddLiquidity,
+  }: MessageItemProps) {
+    const flags = calculateMessageFlags(item, index, totalMessages, nextMessage, streaming);
+
+    const shouldShowMessage =
+      !flags.shouldHideLoadingMessage && (flags.isLoadingState || !flags.isPoolMessage);
+
+    const shouldRenderChatMessage =
+      shouldShowMessage && !(item.message.role === "assistant" && item.pools && item.pools.length > 0);
+
+    const shouldShowDivider =
+      item.message.role === "assistant" &&
+      !item.pools &&
+      !flags.isLoadingState &&
+      !flags.showStreamingInMessage;
+
+    return (
+      <React.Fragment>
+        {shouldShowMessage && (
+          <>
+            {shouldRenderChatMessage && (
+              <div className="w-full break-words">
+                <ChatMessage
+                  message={item.message}
+                  streamingMessage={flags.showStreamingInMessage ? streamMsg : undefined}
+                  isStreaming={flags.showStreamingInMessage}
+                />
+              </div>
+            )}
+            {shouldShowDivider && <hr className="mt-6 mb-10 border-border" />}
+          </>
+        )}
+        {item.pools && item.pools.length > 0 && (
+          <div className="w-full">
+            {flags.showStreamingInPool ? (
+              <BtcPoolsList
+                pools={item.pools}
+                onAddLiquidity={onAddLiquidity}
+                isLoading={poolLoading}
+                aiResponse={item.message.content}
+                aiResponsePart1=""
+                aiResponsePart2=""
+                isStreaming={true}
+                streamingContent={streamMsg}
+              />
+            ) : (
+              <BtcPoolsList
+                pools={item.pools}
+                onAddLiquidity={onAddLiquidity}
+                isLoading={poolLoading}
+                aiResponse={item.message.content}
+                aiResponsePart1={splitAIResponse(item.message.content).part1}
+                aiResponsePart2={splitAIResponse(item.message.content).part2}
+                isStreaming={false}
+                streamingContent={null}
+              />
+            )}
+            <hr className="mt-12 mb-8 border-border" />
+          </div>
+        )}
+      </React.Fragment>
+    );
+  }
+
 return (
   <div className="flex flex-col h-[calc(100vh-100px)] max-w-4xl mx-auto">
     <div className="flex justify-between items-center mb-6 flex-wrap">
@@ -1339,91 +1462,19 @@ return (
     {/* Scrollable chat messages area */}
     <div className="flex-1 overflow-y-auto pb-4 scrollbar-hide">
       <div className="flex flex-col space-y-6">
-        {messageWithPools.map((item, index, array) => {
-          const isPoolMessage =
-            item.message.role === "assistant" &&
-            (item.message.content.includes("Finding the best") ||
-              item.message.content.includes("Found the optimal") ||
-              /Finding the best \w+ Solana liquidity pools for you/.test(
-                item.message.content
-              ));
-
-          const isLoadingState =
-            isPoolMessage &&
-            index === array.length - 1 &&
-            (!item.pools || item.pools.length === 0);
-
-          const shouldHideLoadingMessage =
-            isPoolMessage &&
-            index < array.length - 1 &&
-            array[index + 1].pools &&
-            array[index + 1].pools!.length > 0;
-
-          const isLastMessage = index === array.length - 1;
-          const isAssistantMessage = item.message.role === "assistant";
-          const shouldShowStreaming = isLastMessage && isAssistantMessage && isStreaming;
-          const showStreamingInPool = shouldShowStreaming && item.pools && item.pools.length > 0;
-          const showStreamingInMessage = shouldShowStreaming && (!item.pools || item.pools.length === 0);
-
-          return (
-            <React.Fragment key={index}>
-              {!shouldHideLoadingMessage &&
-                (isLoadingState || !isPoolMessage) && (
-                  <>
-                    {!(item.message.role === "assistant" && item.pools && item.pools.length > 0) && (
-                      <div className="w-full break-words">
-                        <ChatMessage 
-                          message={item.message} 
-                          streamingMessage={showStreamingInMessage ? streamingMessage : undefined}
-                          isStreaming={showStreamingInMessage}
-                        />
-                      </div>
-                    )}
-                    {item.message.role === "assistant" &&
-                      !item.pools &&
-                      !isLoadingState && 
-                      !showStreamingInMessage && <hr className="mt-6 mb-10 border-border" />}
-                  </>
-                )}
-              {item.pools && item.pools.length > 0 && (
-                <div className="w-full">
-                  {(() => {
-                    if (showStreamingInPool) {
-                      return (
-                        <BtcPoolsList
-                          pools={item.pools}
-                          onAddLiquidity={handleAddLiquidity}
-                          isLoading={isPoolLoading}
-                          aiResponse={item.message.content}
-                          aiResponsePart1=""
-                          aiResponsePart2=""
-                          isStreaming={true}
-                          streamingContent={streamingMessage}
-                        />
-                      );
-                    } else {
-                      const { part1, part2 } = splitAIResponse(item.message.content);
-                      return (
-                        <BtcPoolsList
-                          pools={item.pools}
-                          onAddLiquidity={handleAddLiquidity}
-                          isLoading={isPoolLoading}
-                          aiResponse={item.message.content}
-                          aiResponsePart1={part1}
-                          aiResponsePart2={part2}
-                          isStreaming={false}
-                          streamingContent={null}
-                        />
-                      );
-                    }
-                  })()}
-
-                  <hr className="mt-12 mb-8 border-border" />
-                </div>
-              )}
-            </React.Fragment>
-          );
-        })}
+        {messageWithPools.map((item, index, array) => (
+          <MessageItem
+            key={index}
+            item={item}
+            index={index}
+            totalMessages={array.length}
+            nextMessage={array[index + 1]}
+            isStreaming={isStreaming}
+            streamingMessage={streamingMessage}
+            isPoolLoading={isPoolLoading}
+            onAddLiquidity={handleAddLiquidity}
+          />
+        ))}
         <div ref={messagesEndRef} />
       </div>
     </div>
