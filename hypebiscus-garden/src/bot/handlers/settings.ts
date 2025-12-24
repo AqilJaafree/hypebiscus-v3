@@ -10,7 +10,7 @@
 
 import { Context } from 'telegraf';
 import { mcpClient } from '../../utils/mcpClient';
-import { getOrCreateUser } from '../../services/db';
+import { getOrCreateUser, updateUserMonitoring } from '../../services/db';
 
 // Type definitions for settings response
 interface RepositionSettings {
@@ -149,6 +149,14 @@ export async function handleEnableAutoCommand(ctx: Context) {
   }
 
   try {
+    // Get user to update local DB
+    const user = await getOrCreateUser(
+      telegramId,
+      ctx.from?.username,
+      ctx.from?.first_name,
+      ctx.from?.last_name
+    );
+
     // Check if wallet is linked
     const linkedAccount = await mcpClient.getLinkedAccount(telegramId.toString());
 
@@ -178,10 +186,13 @@ export async function handleEnableAutoCommand(ctx: Context) {
       return;
     }
 
-    // Enable auto-reposition
+    // Enable auto-reposition in MCP (website sync)
     await mcpClient.updateRepositionSettings(telegramId.toString(), {
       autoRepositionEnabled: true,
     });
+
+    // Enable monitoring in local DB (for monitoring service)
+    await updateUserMonitoring(user.id, true);
 
     await ctx.reply(
       '✅ **Auto-Reposition Enabled**\n\n' +
@@ -211,6 +222,14 @@ export async function handleDisableAutoCommand(ctx: Context) {
   }
 
   try {
+    // Get user to update local DB
+    const user = await getOrCreateUser(
+      telegramId,
+      ctx.from?.username,
+      ctx.from?.first_name,
+      ctx.from?.last_name
+    );
+
     // Check if wallet is linked
     const linkedAccount = await mcpClient.getLinkedAccount(telegramId.toString());
 
@@ -224,10 +243,13 @@ export async function handleDisableAutoCommand(ctx: Context) {
       return;
     }
 
-    // Disable auto-reposition
+    // Disable auto-reposition in MCP (website sync)
     await mcpClient.updateRepositionSettings(telegramId.toString(), {
       autoRepositionEnabled: false,
     });
+
+    // Disable monitoring in local DB (for monitoring service)
+    await updateUserMonitoring(user.id, false);
 
     await ctx.reply(
       '⏸️ **Auto-Reposition Disabled**\n\n' +
@@ -459,6 +481,14 @@ export async function handleSettingsCallback(ctx: Context) {
       case 'enable_auto': {
         await ctx.answerCbQuery('Enabling auto-reposition...');
 
+        // Get user to update local DB
+        const user = await getOrCreateUser(
+          telegramId,
+          ctx.from?.username,
+          ctx.from?.first_name,
+          ctx.from?.last_name
+        );
+
         // Check if wallet is linked
         const linkedAccount = await mcpClient.getLinkedAccount(telegramId.toString());
         if (!linkedAccount.isLinked) {
@@ -483,10 +513,13 @@ export async function handleSettingsCallback(ctx: Context) {
           return;
         }
 
-        // Enable auto-reposition
+        // Enable auto-reposition in MCP (website sync)
         await mcpClient.updateRepositionSettings(telegramId.toString(), {
           autoRepositionEnabled: true,
         });
+
+        // Enable monitoring in local DB (for monitoring service)
+        await updateUserMonitoring(user.id, true);
 
         // Update the message with new state
         const { message, keyboard } = await buildSettingsMessage(telegramId.toString());
@@ -502,6 +535,14 @@ export async function handleSettingsCallback(ctx: Context) {
       case 'disable_auto': {
         await ctx.answerCbQuery('Disabling auto-reposition...');
 
+        // Get user to update local DB
+        const user = await getOrCreateUser(
+          telegramId,
+          ctx.from?.username,
+          ctx.from?.first_name,
+          ctx.from?.last_name
+        );
+
         // Check if wallet is linked
         const linkedAccount = await mcpClient.getLinkedAccount(telegramId.toString());
         if (!linkedAccount.isLinked) {
@@ -509,10 +550,13 @@ export async function handleSettingsCallback(ctx: Context) {
           return;
         }
 
-        // Disable auto-reposition
+        // Disable auto-reposition in MCP (website sync)
         await mcpClient.updateRepositionSettings(telegramId.toString(), {
           autoRepositionEnabled: false,
         });
+
+        // Disable monitoring in local DB (for monitoring service)
+        await updateUserMonitoring(user.id, false);
 
         // Update the message with new state
         const { message, keyboard } = await buildSettingsMessage(telegramId.toString());
