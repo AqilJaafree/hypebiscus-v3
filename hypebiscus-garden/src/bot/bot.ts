@@ -383,14 +383,16 @@ export class TelegramBot {
         `⚙️ **Settings & Auto-Reposition**\n\n` +
         `**/settings** - View/edit all settings\n` +
         `**/enableauto** - Enable auto-repositioning\n` +
-        `**/disableauto** - Disable auto-repositioning\n` +
-        `**Reposition** button - Toggle monitoring\n\n` +
+        `**/disableauto** - Disable auto-repositioning\n\n` +
         `🤖 Auto-Reposition Features:\n` +
         `• 24/7 position monitoring\n` +
         `• Automatic out-of-range detection\n` +
         `• Smart repositioning\n` +
         `• Real-time notifications\n\n` +
-        `⚠️ Requires imported wallet with private key`,
+        `💳 Requirements:\n` +
+        `• Active subscription OR credits\n` +
+        `• Wallet linked to Telegram\n` +
+        `• Active positions to monitor`,
         { parse_mode: 'Markdown', ...helpKeyboard }
       );
     });
