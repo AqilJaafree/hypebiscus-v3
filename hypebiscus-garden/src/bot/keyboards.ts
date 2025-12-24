@@ -6,7 +6,6 @@ export const mainKeyboard = Markup.inlineKeyboard([
   [Markup.button.callback('🔴 Close Position', 'close_position')],
   [Markup.button.callback('📜 Position History', 'view_history')],
   [Markup.button.callback('👛 Wallet Info', 'wallet_info')],
-  [Markup.button.callback('🔄 Reposition', 'toggle_monitoring')],
   [Markup.button.callback('📈 Pool Status', 'pool_status')]
 ]);
 
