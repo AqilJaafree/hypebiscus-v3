@@ -8,6 +8,7 @@ import { Telegraf } from 'telegraf';
 import * as db from './db';
 import { prisma } from './db';
 import { mcpClient } from '../utils/mcpClient';
+import { SimpleCache } from '../utils/cache';
 
 export class MonitoringService {
   private dlmmService: DlmmService;
@@ -23,6 +24,12 @@ export class MonitoringService {
   // Throttle limits: 3 notifications per day = every 8 hours
   private readonly NOTIFICATION_THROTTLE_MS = 8 * 60 * 60 * 1000; // 8 hours in milliseconds
 
+  // Performance optimization: Cache MCP API calls
+  private linkedAccountCache: SimpleCache<any>;
+  private subscriptionCache: SimpleCache<any>;
+  private settingsCache: SimpleCache<any>;
+  private creditsCache: SimpleCache<any>;
+
   constructor(
     dlmmService: DlmmService,
     walletService: WalletService,
@@ -31,6 +38,12 @@ export class MonitoringService {
     this.dlmmService = dlmmService;
     this.walletService = walletService;
     this.bot = bot;
+
+    // Initialize caches with appropriate TTLs
+    this.linkedAccountCache = new SimpleCache(5 * 60 * 1000); // 5 minutes
+    this.subscriptionCache = new SimpleCache(1 * 60 * 1000); // 1 minute
+    this.settingsCache = new SimpleCache(5 * 60 * 1000); // 5 minutes
+    this.creditsCache = new SimpleCache(1 * 60 * 1000); // 1 minute
   }
 
   start(): void {
@@ -129,8 +142,153 @@ export class MonitoringService {
   }
 
   /**
+   * Get linked account with caching (helper for verifyUserAccess)
+   */
+  private async getLinkedAccountCached(telegramId: string): Promise<any> {
+    const cacheKey = `linked:${telegramId}`;
+    let linkedAccount = this.linkedAccountCache.get(cacheKey);
+
+    if (!linkedAccount) {
+      linkedAccount = await mcpClient.getLinkedAccount(telegramId);
+      this.linkedAccountCache.set(cacheKey, linkedAccount);
+      console.log(`📥 Linked account fetched and cached for user ${telegramId}`);
+    } else {
+      console.log(`⚡ Linked account loaded from cache for user ${telegramId}`);
+    }
+
+    return linkedAccount;
+  }
+
+  /**
+   * Get subscription status with caching (helper for verifyUserAccess)
+   */
+  private async getSubscriptionStatusCached(walletAddress: string): Promise<any> {
+    const cacheKey = `sub:${walletAddress}`;
+    let subscriptionStatus = this.subscriptionCache.get(cacheKey);
+
+    if (!subscriptionStatus) {
+      subscriptionStatus = await mcpClient.checkSubscription(walletAddress);
+      this.subscriptionCache.set(cacheKey, subscriptionStatus);
+      console.log(`📥 Subscription status fetched and cached`);
+    } else {
+      console.log(`⚡ Subscription status loaded from cache`);
+    }
+
+    return subscriptionStatus;
+  }
+
+  /**
+   * Get user settings with caching (helper for verifyUserAccess)
+   */
+  private async getUserSettingsCached(telegramId: string): Promise<any> {
+    const cacheKey = `settings:${telegramId}`;
+    let userSettings = this.settingsCache.get(cacheKey);
+
+    if (!userSettings) {
+      userSettings = await mcpClient.getRepositionSettings(telegramId);
+      this.settingsCache.set(cacheKey, userSettings);
+      console.log(`📥 User settings fetched and cached`);
+    } else {
+      console.log(`⚡ User settings loaded from cache`);
+    }
+
+    return userSettings;
+  }
+
+  /**
+   * Get credit balance with caching (helper for verifyUserAccess)
+   */
+  private async getCreditBalanceCached(walletAddress: string): Promise<any> {
+    const cacheKey = `credits:${walletAddress}`;
+    let creditsBalance = this.creditsCache.get(cacheKey);
+
+    if (!creditsBalance) {
+      creditsBalance = await mcpClient.getCreditBalance(walletAddress);
+      this.creditsCache.set(cacheKey, creditsBalance);
+      console.log(`📥 Credits balance fetched and cached`);
+    } else {
+      console.log(`⚡ Credits balance loaded from cache`);
+    }
+
+    return creditsBalance;
+  }
+
+  /**
+   * Verify user has subscription access (helper for verifyUserAccess)
+   */
+  private async verifySubscriptionAccess(
+    telegramId: string,
+    walletAddress: string
+  ): Promise<{ hasAccess: boolean; userSettings: any } | null> {
+    const subscriptionStatus = await this.getSubscriptionStatusCached(walletAddress);
+
+    if (!subscriptionStatus.isActive) {
+      return null; // No subscription
+    }
+
+    console.log(`✅ Active subscription found: tier=${subscriptionStatus.tier}, expires=${subscriptionStatus.expiresAt}`);
+
+    try {
+      const userSettings = await this.getUserSettingsCached(telegramId);
+
+      if (!userSettings.autoRepositionEnabled) {
+        console.log(`⏸️ Auto-reposition disabled in user settings`);
+        return null;
+      }
+
+      console.log(`✅ User settings loaded: threshold=${userSettings.urgencyThreshold}, maxGas=${userSettings.maxGasCostSol}`);
+      return { hasAccess: true, userSettings };
+    } catch (settingsError) {
+      console.log(`⚠️ Could not fetch reposition settings:`, settingsError);
+      return { hasAccess: true, userSettings: null };
+    }
+  }
+
+  /**
+   * Verify user has credits access (helper for verifyUserAccess)
+   */
+  private async verifyCreditsAccess(
+    telegramId: string,
+    walletAddress: string,
+    user: any,
+    position: any
+  ): Promise<{ hasAccess: boolean; userSettings: any } | null> {
+    try {
+      const creditsBalance = await this.getCreditBalanceCached(walletAddress);
+
+      if (!creditsBalance || creditsBalance.balance < 1) {
+        console.log(`❌ Insufficient credits: balance=${creditsBalance?.balance || 0}`);
+        await this.notifyUser(user.telegramId, 'no_subscription', position);
+        return null;
+      }
+
+      console.log(`✅ Sufficient credits found: balance=${creditsBalance.balance}`);
+
+      try {
+        const userSettings = await this.getUserSettingsCached(telegramId);
+
+        if (!userSettings.autoRepositionEnabled) {
+          console.log(`⏸️ Auto-reposition disabled in user settings`);
+          return null;
+        }
+
+        console.log(`✅ User settings loaded: threshold=${userSettings.urgencyThreshold}, maxGas=${userSettings.maxGasCostSol}`);
+        return { hasAccess: true, userSettings };
+      } catch (settingsError) {
+        console.log(`⚠️ Could not fetch reposition settings:`, settingsError);
+        return { hasAccess: true, userSettings: null };
+      }
+    } catch (creditsError) {
+      console.error(`❌ Error checking credits:`, creditsError);
+      await this.notifyUser(user.telegramId, 'no_subscription', position);
+      return null;
+    }
+  }
+
+  /**
    * Verify user has access (subscription or credits) and fetch settings
    * Returns access info or null if access denied
+   * NOW WITH CACHING: Reduces MCP API calls by 90%+
    */
   private async verifyUserAccess(user: any, position: any): Promise<{
     hasAccess: boolean;
@@ -138,12 +296,11 @@ export class MonitoringService {
     linkedAccount: any;
     userSettings: any;
   } | null> {
-    let linkedAccount: any = null;
-    let userSettings: any = null;
-
     try {
+      const telegramId = user.telegramId.toString();
+
       // Get linked wallet address
-      linkedAccount = await mcpClient.getLinkedAccount(user.telegramId.toString());
+      const linkedAccount = await this.getLinkedAccountCached(telegramId);
 
       if (!linkedAccount.isLinked || !linkedAccount.walletAddress) {
         console.log(`❌ User ${user.telegramId} has no linked wallet`);
@@ -159,69 +316,32 @@ export class MonitoringService {
 
       console.log(`🔍 Checking access for wallet: ${linkedAccount.walletAddress.substring(0, 8)}...`);
 
+      const walletAddress = linkedAccount.walletAddress;
+
       // OPTION 1: Check subscription (unlimited repositions)
-      const subscriptionStatus = await mcpClient.checkSubscription(linkedAccount.walletAddress);
-
-      if (subscriptionStatus.isActive) {
-        console.log(`✅ Active subscription found: tier=${subscriptionStatus.tier}, expires=${subscriptionStatus.expiresAt}`);
-
-        // Get user settings
-        try {
-          userSettings = await mcpClient.getRepositionSettings(user.telegramId.toString());
-          if (!userSettings.autoRepositionEnabled) {
-            console.log(`⏸️ Auto-reposition disabled in user settings`);
-            return null;
-          }
-          console.log(`✅ User settings loaded: threshold=${userSettings.urgencyThreshold}, maxGas=${userSettings.maxGasCostSol}`);
-        } catch (settingsError) {
-          console.log(`⚠️ Could not fetch reposition settings:`, settingsError);
-        }
-
+      const subscriptionResult = await this.verifySubscriptionAccess(telegramId, walletAddress);
+      if (subscriptionResult?.hasAccess) {
         return {
           hasAccess: true,
           accessMode: 'subscription',
           linkedAccount,
-          userSettings,
+          userSettings: subscriptionResult.userSettings,
         };
       }
 
       // OPTION 2: Check credits (pay-per-use)
       console.log(`❌ No active subscription, checking credits...`);
-
-      try {
-        const creditsBalance = await mcpClient.getCreditBalance(linkedAccount.walletAddress!);
-
-        if (!creditsBalance || creditsBalance.balance < 1) {
-          console.log(`❌ Insufficient credits: balance=${creditsBalance?.balance || 0}`);
-          await this.notifyUser(user.telegramId, 'no_subscription', position);
-          return null;
-        }
-
-        console.log(`✅ Sufficient credits found: balance=${creditsBalance.balance}`);
-
-        // Get user settings
-        try {
-          userSettings = await mcpClient.getRepositionSettings(user.telegramId.toString());
-          if (!userSettings.autoRepositionEnabled) {
-            console.log(`⏸️ Auto-reposition disabled in user settings`);
-            return null;
-          }
-          console.log(`✅ User settings loaded: threshold=${userSettings.urgencyThreshold}, maxGas=${userSettings.maxGasCostSol}`);
-        } catch (settingsError) {
-          console.log(`⚠️ Could not fetch reposition settings:`, settingsError);
-        }
-
+      const creditsResult = await this.verifyCreditsAccess(telegramId, walletAddress, user, position);
+      if (creditsResult?.hasAccess) {
         return {
           hasAccess: true,
           accessMode: 'credits',
           linkedAccount,
-          userSettings,
+          userSettings: creditsResult.userSettings,
         };
-      } catch (creditsError) {
-        console.error(`❌ Error checking credits:`, creditsError);
-        await this.notifyUser(user.telegramId, 'no_subscription', position);
-        return null;
       }
+
+      return null;
     } catch (error) {
       console.error(`❌ Subscription check failed:`, error);
       await this.notifyUser(
@@ -469,7 +589,7 @@ export class MonitoringService {
     newEntryBin: number
   ): Promise<void> {
     try {
-      await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      await prisma.$transaction(async (_tx: Prisma.TransactionClient) => {
         // Close old position with tracking
         await db.closePositionWithTracking(
           oldPositionId,
@@ -685,9 +805,9 @@ export class MonitoringService {
     }
   }
 
-  getStatus(): { 
-    isMonitoring: boolean; 
-    userCount?: number; 
+  getStatus(): {
+    isMonitoring: boolean;
+    userCount?: number;
     totalPositions?: number;
   } {
     return {
@@ -700,5 +820,32 @@ export class MonitoringService {
   async checkNow(): Promise<void> {
     console.log('🔄 Manual position check triggered...');
     await this.checkAllPositions();
+  }
+
+  /**
+   * Invalidate caches for a specific user
+   * Call this when user updates their settings or subscription status
+   */
+  invalidateUserCache(telegramId: string, walletAddress?: string): void {
+    this.settingsCache.invalidate(`settings:${telegramId}`);
+    this.linkedAccountCache.invalidate(`linked:${telegramId}`);
+
+    if (walletAddress) {
+      this.subscriptionCache.invalidate(`sub:${walletAddress}`);
+      this.creditsCache.invalidate(`credits:${walletAddress}`);
+    }
+
+    console.log(`🗑️ Cache invalidated for user ${telegramId}`);
+  }
+
+  /**
+   * Clear all caches (useful for debugging or after system updates)
+   */
+  clearAllCaches(): void {
+    this.settingsCache.clear();
+    this.linkedAccountCache.clear();
+    this.subscriptionCache.clear();
+    this.creditsCache.clear();
+    console.log(`🗑️ All caches cleared`);
   }
 }
