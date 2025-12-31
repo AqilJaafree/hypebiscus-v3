@@ -389,103 +389,104 @@ export async function handleSubscribeCommand(ctx: Context) {
 }
 
 /**
- * Helper function to build settings message and keyboard
- * NOW WITH CACHING: Reduces API calls by 90%+
+ * Get linked account with caching (helper)
  */
-async function buildSettingsMessage(telegramId: string) {
-  // Check if wallet is linked (cached for 5 minutes)
-  const linkedCacheKey = `linked:${telegramId}`;
-  let linkedAccount = linkedAccountCache.get(linkedCacheKey);
+async function getLinkedAccountCached(telegramId: string): Promise<any> {
+  const cacheKey = `linked:${telegramId}`;
+  let linkedAccount = linkedAccountCache.get(cacheKey);
 
   if (!linkedAccount) {
     linkedAccount = await mcpClient.getLinkedAccount(telegramId);
-    linkedAccountCache.set(linkedCacheKey, linkedAccount);
+    linkedAccountCache.set(cacheKey, linkedAccount);
     console.log(`📥 Linked account fetched and cached for settings`);
   } else {
     console.log(`⚡ Linked account loaded from cache for settings`);
   }
 
-  if (!linkedAccount.isLinked || !linkedAccount.walletAddress) {
-    throw new Error('No wallet linked');
-  }
+  return linkedAccount;
+}
 
-  // Get current settings (cached for 5 minutes)
-  const settingsCacheKey = `settings:${telegramId}`;
-  let settings = settingsCache.get(settingsCacheKey);
+/**
+ * Get settings with caching (helper)
+ */
+async function getSettingsCached(telegramId: string): Promise<RepositionSettings> {
+  const cacheKey = `settings:${telegramId}`;
+  let settings = settingsCache.get(cacheKey);
 
   if (!settings) {
     settings = await mcpClient.getRepositionSettings(telegramId) as RepositionSettings;
-    settingsCache.set(settingsCacheKey, settings);
+    settingsCache.set(cacheKey, settings);
     console.log(`📥 Settings fetched and cached`);
   } else {
     console.log(`⚡ Settings loaded from cache`);
   }
 
-  const walletAddress = linkedAccount.walletAddress;
+  return settings;
+}
 
-  // Check subscription/credits status (cached for 1 minute)
-  const subCacheKey = `sub:${walletAddress}`;
-  let subscriptionStatus = subscriptionCache.get(subCacheKey);
+/**
+ * Get subscription status with caching (helper)
+ */
+async function getSubscriptionStatusCached(walletAddress: string): Promise<any> {
+  const cacheKey = `sub:${walletAddress}`;
+  let subscriptionStatus = subscriptionCache.get(cacheKey);
 
   if (!subscriptionStatus) {
     subscriptionStatus = await mcpClient.checkSubscription(walletAddress);
-    subscriptionCache.set(subCacheKey, subscriptionStatus);
+    subscriptionCache.set(cacheKey, subscriptionStatus);
     console.log(`📥 Subscription status fetched and cached`);
   } else {
     console.log(`⚡ Subscription status loaded from cache`);
   }
 
-  const creditsCacheKey = `credits:${walletAddress}`;
-  let creditBalance = creditsCache.get(creditsCacheKey);
+  return subscriptionStatus;
+}
+
+/**
+ * Get credit balance with caching (helper)
+ */
+async function getCreditBalanceCached(walletAddress: string): Promise<any> {
+  const cacheKey = `credits:${walletAddress}`;
+  let creditBalance = creditsCache.get(cacheKey);
 
   if (!creditBalance) {
     creditBalance = await mcpClient.getCreditBalance(walletAddress);
-    creditsCache.set(creditsCacheKey, creditBalance);
+    creditsCache.set(cacheKey, creditBalance);
     console.log(`📥 Credit balance fetched and cached`);
   } else {
     console.log(`⚡ Credit balance loaded from cache`);
   }
 
-  // Payment status section
-  let paymentStatus = '';
+  return creditBalance;
+}
+
+/**
+ * Build payment status section (helper)
+ */
+function buildPaymentStatusSection(subscriptionStatus: any, creditBalance: any): string {
   if (subscriptionStatus.isActive) {
-    paymentStatus =
+    return (
       '✅ **Subscription Active**\n' +
       `Tier: ${subscriptionStatus.tier}\n` +
       `Expires: ${new Date(subscriptionStatus.expiresAt!).toLocaleDateString()}\n` +
-      `Days Remaining: ${subscriptionStatus.daysRemaining}\n`;
+      `Days Remaining: ${subscriptionStatus.daysRemaining}\n`
+    );
   } else if (creditBalance.balance > 0) {
-    paymentStatus =
+    return (
       '💳 **Pay-per-use Credits**\n' +
       `Balance: ${creditBalance.balance} credits\n` +
-      `Repositions Available: ${Math.floor(creditBalance.balance / 1)}\n`;
+      `Repositions Available: ${Math.floor(creditBalance.balance / 1)}\n`
+    );
   } else {
-    paymentStatus =
-      '⚠️ **No Active Payment**\n' +
-      'You need a subscription or credits for auto-reposition.\n';
+    return '⚠️ **No Active Payment**\nYou need a subscription or credits for auto-reposition.\n';
   }
+}
 
-  const message =
-    '⚙️ **Auto-Reposition Settings**\n\n' +
-    '**Payment Status:**\n' +
-    paymentStatus +
-    '\n**Settings:**\n' +
-    `🔄 Auto-Reposition: ${settings.autoRepositionEnabled ? '✅ Enabled' : '❌ Disabled'}\n` +
-    `⚡ Urgency Threshold: ${settings.urgencyThreshold.toUpperCase()}\n` +
-    `⛽ Max Gas Cost: ${settings.maxGasCostSol} SOL\n` +
-    `💰 Min Fees to Collect: $${settings.minFeesToCollectUsd}\n` +
-    `📊 Allowed Strategies: ${settings.allowedStrategies.join(', ')}\n\n` +
-    '**Notifications:**\n' +
-    `📱 Telegram: ${settings.telegramNotifications ? '✅ On' : '❌ Off'}\n` +
-    `🌐 Website: ${settings.websiteNotifications ? '✅ On' : '❌ Off'}\n\n` +
-    '**Quick Commands:**\n' +
-    `/enableauto - Enable auto-repositioning\n` +
-    `/disableauto - Disable auto-repositioning\n` +
-    `/subscribe - Get unlimited repositions\n` +
-    `/credits - Check credit balance\n` +
-    `/topup - Purchase credits`;
-
-  const keyboard = {
+/**
+ * Build settings keyboard (helper)
+ */
+function buildSettingsKeyboard(settings: RepositionSettings, subscriptionStatus: any): any {
+  return {
     inline_keyboard: [
       [
         {
@@ -521,6 +522,50 @@ async function buildSettingsMessage(telegramId: string) {
       ],
     ],
   };
+}
+
+/**
+ * Helper function to build settings message and keyboard
+ * NOW WITH CACHING: Reduces API calls by 90%+
+ */
+async function buildSettingsMessage(telegramId: string) {
+  // Get linked account
+  const linkedAccount = await getLinkedAccountCached(telegramId);
+
+  if (!linkedAccount.isLinked || !linkedAccount.walletAddress) {
+    throw new Error('No wallet linked');
+  }
+
+  // Get settings and payment status
+  const settings = await getSettingsCached(telegramId);
+  const walletAddress = linkedAccount.walletAddress;
+  const subscriptionStatus = await getSubscriptionStatusCached(walletAddress);
+  const creditBalance = await getCreditBalanceCached(walletAddress);
+
+  // Build message sections
+  const paymentStatus = buildPaymentStatusSection(subscriptionStatus, creditBalance);
+
+  const message =
+    '⚙️ **Auto-Reposition Settings**\n\n' +
+    '**Payment Status:**\n' +
+    paymentStatus +
+    '\n**Settings:**\n' +
+    `🔄 Auto-Reposition: ${settings.autoRepositionEnabled ? '✅ Enabled' : '❌ Disabled'}\n` +
+    `⚡ Urgency Threshold: ${settings.urgencyThreshold.toUpperCase()}\n` +
+    `⛽ Max Gas Cost: ${settings.maxGasCostSol} SOL\n` +
+    `💰 Min Fees to Collect: $${settings.minFeesToCollectUsd}\n` +
+    `📊 Allowed Strategies: ${settings.allowedStrategies.join(', ')}\n\n` +
+    '**Notifications:**\n' +
+    `📱 Telegram: ${settings.telegramNotifications ? '✅ On' : '❌ Off'}\n` +
+    `🌐 Website: ${settings.websiteNotifications ? '✅ On' : '❌ Off'}\n\n` +
+    '**Quick Commands:**\n' +
+    `/enableauto - Enable auto-repositioning\n` +
+    `/disableauto - Disable auto-repositioning\n` +
+    `/subscribe - Get unlimited repositions\n` +
+    `/credits - Check credit balance\n` +
+    `/topup - Purchase credits`;
+
+  const keyboard = buildSettingsKeyboard(settings, subscriptionStatus);
 
   return { message, keyboard };
 }
