@@ -125,9 +125,12 @@ export async function purchaseSubscription(
 
     console.log('[x402] Subscription purchase successful:', result);
 
+    // Extract transaction signature from nested payment object
+    const transactionSignature = result.payment?.transactionSignature || result.transactionSignature;
+
     return {
       success: true,
-      signature: result.transactionSignature,
+      signature: transactionSignature,
       data: result
     };
   } catch (error) {
