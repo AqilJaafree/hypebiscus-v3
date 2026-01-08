@@ -34,6 +34,7 @@ import { checkSubscription as checkSubscriptionTool, CheckSubscriptionSchema, Ch
 import { recordExecution, RecordExecutionSchema, RecordExecutionInput } from './tools/recordExecution.js';
 import { getCreditBalance, GetCreditBalanceSchema, GetCreditBalanceInput } from './tools/getCreditBalance.js';
 import { purchaseCredits, PurchaseCreditsSchema, PurchaseCreditsInput } from './tools/purchaseCredits.js';
+import { purchaseSubscription, PurchaseSubscriptionSchema, PurchaseSubscriptionInput } from './tools/purchaseSubscription.js';
 import { useCredits, UseCreditsSchema, UseCreditsInput } from './tools/useCredits.js';
 import { calculatePositionPnL_tool, formatCalculatePnLError, CalculatePositionPnLInput } from './tools/calculatePositionPnL.js';
 import { closePosition_tool, formatClosePositionError, ClosePositionInput } from './tools/closePosition.js';
@@ -567,6 +568,34 @@ const TOOLS: Tool[] = [
         },
       },
       required: ['walletAddress', 'creditsAmount', 'x402PaymentHeader'],
+    },
+  },
+  {
+    name: 'purchase_subscription',
+    description:
+      'Creates or renews a premium subscription after x402 payment verification. Backend service that trusts the resource server\'s payment verification. Handles both new subscriptions and renewals (extends by 30 days).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        walletAddress: {
+          type: 'string',
+          description: 'Solana wallet address purchasing subscription',
+        },
+        paymentTxSignature: {
+          type: 'string',
+          description: 'Solana transaction signature from verified payment',
+        },
+        x402PaymentProof: {
+          type: 'string',
+          description: 'x402 payment proof header for audit trail',
+        },
+        tier: {
+          type: 'string',
+          enum: ['premium'],
+          description: 'Subscription tier (currently only premium is supported)',
+        },
+      },
+      required: ['walletAddress', 'paymentTxSignature', 'x402PaymentProof'],
     },
   },
   {
@@ -1187,6 +1216,20 @@ class HypebiscusMCPServer {
             };
           }
 
+          case 'purchase_subscription': {
+            const validatedInput = PurchaseSubscriptionSchema.parse(args);
+            const result = await purchaseSubscription(validatedInput as PurchaseSubscriptionInput);
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify(result, null, 2),
+                },
+              ],
+            };
+          }
+
           case 'use_credits': {
             const validatedInput = UseCreditsSchema.parse(args);
             const result = await useCredits(validatedInput as UseCreditsInput);
@@ -1344,6 +1387,18 @@ class HypebiscusMCPServer {
             break;
           case 'sync_wallet_positions':
             errorMessage = `Error syncing wallet positions: ${error instanceof Error ? error.message : 'Unknown error'}`;
+            break;
+          case 'purchase_subscription':
+            errorMessage = `Error purchasing subscription: ${error instanceof Error ? error.message : 'Unknown error'}`;
+            break;
+          case 'purchase_credits':
+            errorMessage = `Error purchasing credits: ${error instanceof Error ? error.message : 'Unknown error'}`;
+            break;
+          case 'use_credits':
+            errorMessage = `Error using credits: ${error instanceof Error ? error.message : 'Unknown error'}`;
+            break;
+          case 'get_credit_balance':
+            errorMessage = `Error getting credit balance: ${error instanceof Error ? error.message : 'Unknown error'}`;
             break;
           default:
             errorMessage = formatToolError(error);

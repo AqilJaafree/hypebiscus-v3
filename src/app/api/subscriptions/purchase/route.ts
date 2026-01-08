@@ -24,8 +24,7 @@ const SUBSCRIPTION_DURATION_DAYS = 30;
 const MCP_SERVER_URL = process.env.MCP_SERVER_URL || 'http://localhost:3001';
 
 /**
- * Create subscription in database via direct database access
- * TODO: Refactor to use MCP tool when create_subscription tool is implemented
+ * Create or renew subscription in database via MCP purchase_subscription tool
  */
 async function createSubscriptionInDatabase(
   walletAddress: string,
@@ -37,15 +36,7 @@ async function createSubscriptionInDatabase(
   currentPeriodStart: string;
   currentPeriodEnd: string;
 }> {
-  // Calculate subscription period
-  const now = new Date();
-  const currentPeriodStart = now.toISOString();
-  const currentPeriodEnd = new Date(now.getTime() + (SUBSCRIPTION_DURATION_DAYS * 24 * 60 * 60 * 1000)).toISOString();
-
-  // Call MCP server to create subscription
-  // Note: This will need a new MCP tool "create_subscription"
-  // For now, we'll use a workaround by calling the database directly via MCP
-
+  // Call MCP server to create/renew subscription
   const mcpResponse = await fetch(MCP_SERVER_URL, {
     method: 'POST',
     headers: {
@@ -53,14 +44,12 @@ async function createSubscriptionInDatabase(
     },
     body: JSON.stringify({
       jsonrpc: '2.0',
-      method: 'create_subscription', // TODO: This tool needs to be created in MCP server
+      method: 'purchase_subscription',
       params: {
         walletAddress,
         tier: 'premium',
         paymentTxSignature: paymentProof.transactionSignature,
         x402PaymentProof: paymentProof.transactionSignature,
-        currentPeriodStart,
-        currentPeriodEnd,
       },
       id: Date.now(),
     }),
@@ -73,13 +62,6 @@ async function createSubscriptionInDatabase(
   const mcpData = await mcpResponse.json();
 
   if (mcpData.error) {
-    // If create_subscription tool doesn't exist yet, provide helpful error
-    if (mcpData.error.message?.includes('Unknown tool')) {
-      throw new Error(
-        'Subscription creation tool not yet implemented in MCP server. ' +
-        'Please implement create_subscription tool in hypebiscus-mcp/src/tools/'
-      );
-    }
     throw new Error(mcpData.error.message || 'MCP server error');
   }
 
@@ -89,8 +71,15 @@ async function createSubscriptionInDatabase(
     throw new Error('Empty response from MCP server');
   }
 
-  const subscription = JSON.parse(content);
-  return subscription;
+  const result = JSON.parse(content);
+
+  // The MCP tool returns { success, subscription, payment, message }
+  // We only need the subscription object for this function
+  if (!result.success || !result.subscription) {
+    throw new Error(result.message || 'Failed to create subscription');
+  }
+
+  return result.subscription;
 }
 
 /**
