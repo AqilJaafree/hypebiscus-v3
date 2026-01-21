@@ -9,59 +9,90 @@ datasource db {
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model positions {
-  id           String    @id
-  userId       String
-  positionId   String    @unique
-  poolAddress  String
-  zbtcAmount   Decimal   @db.Decimal(20, 8)
-  entryPrice   Decimal   @db.Decimal(20, 8)
-  isActive     Boolean   @default(true)
-  createdAt    DateTime  @default(now())
-  lastChecked  DateTime  @default(now())
-  entryBin     Int       @default(0)
-  solAmount    Decimal   @default(0) @db.Decimal(20, 8)
-  zbtcReturned Decimal?  @db.Decimal(20, 8)
-  solReturned  Decimal?  @db.Decimal(20, 8)
-  exitPrice    Decimal?  @db.Decimal(20, 8)
-  exitBin      Int?
-  zbtcFees     Decimal?  @default(0) @db.Decimal(20, 8)
-  solFees      Decimal?  @default(0) @db.Decimal(20, 8)
-  pnlUsd       Decimal?  @db.Decimal(20, 8)
-  pnlPercent   Decimal?  @db.Decimal(10, 4)
-  closedAt     DateTime? @db.Timestamp(6)
-  users        users     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                      String                      @id
+  userId                  String
+  positionId              String                      @unique
+  poolAddress             String
+  zbtcAmount              Decimal                     @db.Decimal(20, 8)
+  entryPrice              Decimal                     @db.Decimal(20, 8)
+  isActive                Boolean                     @default(true)
+  createdAt               DateTime                    @default(now())
+  lastChecked             DateTime                    @default(now())
+  entryBin                Int                         @default(0)
+  solAmount               Decimal                     @default(0) @db.Decimal(20, 8)
+  zbtcReturned            Decimal?                    @db.Decimal(20, 8)
+  solReturned             Decimal?                    @db.Decimal(20, 8)
+  exitPrice               Decimal?                    @db.Decimal(20, 8)
+  exitBin                 Int?
+  zbtcFees                Decimal?                    @default(0) @db.Decimal(20, 8)
+  solFees                 Decimal?                    @default(0) @db.Decimal(20, 8)
+  pnlUsd                  Decimal?                    @db.Decimal(20, 8)
+  pnlPercent              Decimal?                    @db.Decimal(10, 4)
+  closedAt                DateTime?                   @db.Timestamp(6)
+  source                  String                      @default("telegram")
+  linkedWalletAddress     String?                     @map("linked_wallet_address")
+
+  // Enhanced PnL tracking (production-grade)
+  depositValueUsd         Decimal?                    @map("deposit_value_usd") @db.Decimal(20, 8)
+  depositTokenXPrice      Decimal?                    @map("deposit_token_x_price") @db.Decimal(20, 8)
+  depositTokenYPrice      Decimal?                    @map("deposit_token_y_price") @db.Decimal(20, 8)
+  withdrawValueUsd        Decimal?                    @map("withdraw_value_usd") @db.Decimal(20, 8)
+  withdrawTokenXPrice     Decimal?                    @map("withdraw_token_x_price") @db.Decimal(20, 8)
+  withdrawTokenYPrice     Decimal?                    @map("withdraw_token_y_price") @db.Decimal(20, 8)
+  realizedPnlUsd          Decimal?                    @map("realized_pnl_usd") @db.Decimal(20, 8)
+  realizedPnlPercent      Decimal?                    @map("realized_pnl_percent") @db.Decimal(10, 4)
+  impermanentLossUsd      Decimal?                    @map("impermanent_loss_usd") @db.Decimal(20, 8)
+  impermanentLossPercent  Decimal?                    @map("impermanent_loss_percent") @db.Decimal(10, 4)
+  feesEarnedUsd           Decimal?                    @map("fees_earned_usd") @db.Decimal(20, 8)
+  rewardsEarnedUsd        Decimal?                    @default(0) @map("rewards_earned_usd") @db.Decimal(20, 8)
+
+  users                   users                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions            position_transactions[]
 
   @@index([positionId])
   @@index([userId, isActive])
+  @@index([source, isActive])
+  @@index([userId, isActive, realizedPnlUsd], map: "idx_positions_pnl_analysis")
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model user_stats {
-  id              String    @id @default(dbgenerated("(gen_random_uuid())::text"))
-  userId          String    @unique
-  totalPositions  Int?      @default(0)
-  activePositions Int?      @default(0)
-  totalZbtcFees   Decimal?  @default(0) @db.Decimal(20, 8)
-  totalSolFees    Decimal?  @default(0) @db.Decimal(20, 8)
-  totalPnlUsd     Decimal?  @default(0) @db.Decimal(20, 8)
-  avgPositionSize Decimal?  @default(0) @db.Decimal(20, 8)
-  avgHoldTime     Int?      @default(0)
-  updatedAt       DateTime? @default(now()) @db.Timestamp(6)
-  users           users     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_user")
+  id                        String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId                    String    @unique
+  totalPositions            Int?      @default(0)
+  activePositions           Int?      @default(0)
+  totalZbtcFees             Decimal?  @default(0) @db.Decimal(20, 8)
+  totalSolFees              Decimal?  @default(0) @db.Decimal(20, 8)
+  totalPnlUsd               Decimal?  @default(0) @db.Decimal(20, 8)
+  avgPositionSize           Decimal?  @default(0) @db.Decimal(20, 8)
+  avgHoldTime               Int?      @default(0)
+
+  // Enhanced PnL tracking aggregates
+  totalImpermanentLossUsd   Decimal?  @default(0) @map("total_impermanent_loss_usd") @db.Decimal(20, 8)
+  totalFeesEarnedUsd        Decimal?  @default(0) @map("total_fees_earned_usd") @db.Decimal(20, 8)
+  totalRewardsEarnedUsd     Decimal?  @default(0) @map("total_rewards_earned_usd") @db.Decimal(20, 8)
+
+  updatedAt                 DateTime? @default(now()) @db.Timestamp(6)
+  users                     users     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_user")
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model users {
-  id           String      @id
-  telegramId   BigInt      @unique
-  username     String?
-  isMonitoring Boolean     @default(false)
-  createdAt    DateTime    @default(now())
-  positions    positions[]
-  user_stats   user_stats?
-  wallets      wallets?
+  id                  String                    @id
+  telegramId          BigInt                    @unique
+  username            String?
+  isMonitoring        Boolean                   @default(false)
+  createdAt           DateTime                  @default(now())
+  linkedWalletAddress String?                   @map("linked_wallet_address")
+  walletLinkToken     String?                   @map("wallet_link_token")
+  walletLinkExpiresAt DateTime?                 @map("wallet_link_expires_at")
+  positions           positions[]
+  reposition_settings user_reposition_settings?
+  user_stats          user_stats?
+  wallets             wallets?
 
   @@index([telegramId])
+  @@index([linkedWalletAddress])
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
@@ -72,7 +103,322 @@ model wallets {
   encrypted String
   iv        String
   createdAt DateTime @default(now())
+  source    String   @default("telegram")
+  isActive  Boolean  @default(true) @map("is_active")
   users     users    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([userId, source], name: "idx_wallets_user_source_active")
   @@index([publicKey])
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model position_reposition_history {
+  id                    String   @id @default(dbgenerated("gen_random_uuid()"))
+  oldPositionAddress    String   @map("old_position_address")
+  newPositionAddress    String   @map("new_position_address")
+  walletAddress         String   @map("wallet_address")
+  poolAddress           String   @map("pool_address")
+  repositionReason      String   @map("reposition_reason")
+  oldBinRange           String   @map("old_bin_range")
+  newBinRange           String   @map("new_bin_range")
+  activeBinAtReposition Int      @map("active_bin_at_reposition")
+  distanceFromRange     Int      @map("distance_from_range")
+  transactionSignature  String?  @map("transaction_signature")
+  gasCostSol            Decimal? @map("gas_cost_sol") @db.Decimal(20, 9)
+  oldTokenXAmount       Decimal? @map("old_token_x_amount") @db.Decimal(20, 8)
+  oldTokenYAmount       Decimal? @map("old_token_y_amount") @db.Decimal(20, 8)
+  feesClaimedX          Decimal? @map("fees_claimed_x") @db.Decimal(20, 8)
+  feesClaimedY          Decimal? @map("fees_claimed_y") @db.Decimal(20, 8)
+  newTokenXAmount       Decimal? @map("new_token_x_amount") @db.Decimal(20, 8)
+  newTokenYAmount       Decimal? @map("new_token_y_amount") @db.Decimal(20, 8)
+  strategy              String?
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([oldPositionAddress, newPositionAddress], map: "idx_position_chain")
+  @@index([walletAddress, createdAt(sort: Desc)], map: "idx_wallet_reposition")
+  @@index([poolAddress, createdAt(sort: Desc)], map: "idx_pool_reposition")
+  @@index([newPositionAddress], map: "idx_new_position_lookup")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model user_reposition_settings {
+  id                    String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId                String   @unique @map("user_id")
+  autoRepositionEnabled Boolean  @default(false) @map("auto_reposition_enabled")
+  urgencyThreshold      String   @default("medium") @map("urgency_threshold")
+  maxGasCostSol         Decimal  @default(0.02) @map("max_gas_cost_sol") @db.Decimal(20, 9)
+  minFeesToCollectUsd   Decimal  @default(5) @map("min_fees_to_collect_usd") @db.Decimal(20, 2)
+  allowedStrategies     String[] @default(["one-sided-x", "one-sided-y", "balanced"]) @map("allowed_strategies")
+  telegramNotifications Boolean  @default(true) @map("telegram_notifications")
+  websiteNotifications  Boolean  @default(true) @map("website_notifications")
+  updatedFrom           String?  @map("updated_from")
+  updatedAt             DateTime @default(now()) @updatedAt @map("updated_at")
+  createdAt             DateTime @default(now()) @map("created_at")
+  user                  users    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// Security: Wallet link tokens stored server-side for single-use enforcement
+model wallet_link_tokens {
+  id            String    @id @default(dbgenerated("gen_random_uuid()"))
+  token         String    @unique
+  shortToken    String?   @unique @map("short_token")
+  walletAddress String    @map("wallet_address")
+  expiresAt     DateTime  @map("expires_at")
+  used          Boolean   @default(false)
+  usedAt        DateTime? @map("used_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  ipAddress     String?   @map("ip_address")
+
+  @@index([token, used, expiresAt], map: "idx_token_lookup")
+  @@index([shortToken, used, expiresAt], map: "idx_short_token_lookup")
+  @@index([walletAddress, createdAt(sort: Desc)], map: "idx_wallet_tokens")
+}
+
+/// Security: Pending transactions for replay attack prevention
+model pending_transactions {
+  id              String    @id @default(dbgenerated("gen_random_uuid()"))
+  txHash          String    @unique @map("tx_hash")
+  walletAddress   String    @map("wallet_address")
+  positionAddress String    @map("position_address")
+  expiresAt       DateTime  @map("expires_at")
+  executed        Boolean   @default(false)
+  executedAt      DateTime? @map("executed_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@index([txHash, executed, expiresAt], map: "idx_tx_lookup")
+  @@index([walletAddress, createdAt(sort: Desc)], map: "idx_wallet_pending_tx")
+}
+
+/// Security: CSRF tokens for wallet linking protection
+model csrf_tokens {
+  id             String    @id @default(dbgenerated("gen_random_uuid()"))
+  token          String    @unique
+  telegramUserId BigInt    @map("telegram_user_id")
+  expiresAt      DateTime  @map("expires_at")
+  used           Boolean   @default(false)
+  usedAt         DateTime? @map("used_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  @@index([token, used, expiresAt], map: "idx_csrf_lookup")
+  @@index([telegramUserId], map: "idx_telegram_csrf")
+}
+
+/// Audit trail for settings changes
+model user_reposition_settings_history {
+  id           String   @id @default(dbgenerated("gen_random_uuid()"))
+  userId       String   @map("user_id")
+  changedField String   @map("changed_field")
+  oldValue     String?  @map("old_value")
+  newValue     String?  @map("new_value")
+  updatedFrom  String   @map("updated_from")
+  changedBy    String?  @map("changed_by")
+  changedAt    DateTime @default(now()) @map("changed_at")
+
+  @@index([userId, changedAt(sort: Desc)], map: "idx_user_settings_history")
+}
+
+/// User subscriptions for premium features (x402 payments)
+model user_subscriptions {
+  id                  String    @id @default(dbgenerated("gen_random_uuid()"))
+  walletAddress       String    @unique @map("wallet_address")
+  tier                String    @default("free") // 'free', 'premium'
+  status              String    @default("active") // 'active', 'cancelled', 'expired'
+  paymentTxSignature  String?   @map("payment_tx_signature")
+  x402PaymentProof    String?   @map("x402_payment_proof") // x402 payment header for verification
+  currentPeriodStart  DateTime  @map("current_period_start")
+  currentPeriodEnd    DateTime  @map("current_period_end")
+  autoRenew           Boolean   @default(true) @map("auto_renew")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@index([walletAddress, status], map: "idx_wallet_subscription_status")
+  @@index([status, currentPeriodEnd], map: "idx_subscription_expiry")
+}
+
+/// Reposition execution history for auto-reposition tracking
+model reposition_executions {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()"))
+  walletAddress        String    @map("wallet_address")
+  positionAddress      String    @map("position_address")
+  subscriptionId       String?   @map("subscription_id")
+  success              Boolean   @default(false)
+  gasCostSol           Decimal?  @map("gas_cost_sol") @db.Decimal(20, 9)
+  feesCollectedUsd     Decimal?  @map("fees_collected_usd") @db.Decimal(20, 2)
+  error                String?
+  transactionSignature String?   @map("transaction_signature")
+  executionReason      String?   @map("execution_reason") // Why was reposition triggered
+  executionMode        String    @default("manual") @map("execution_mode") // 'auto', 'manual'
+  createdAt            DateTime  @default(now()) @map("created_at")
+
+  @@index([walletAddress, createdAt(sort: Desc)], map: "idx_wallet_executions")
+  @@index([positionAddress, createdAt(sort: Desc)], map: "idx_position_executions")
+  @@index([subscriptionId], map: "idx_subscription_executions")
+}
+
+/// Monitor state tracking for auto-reposition service
+model monitor_state {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()"))
+  serviceType         String   @unique @map("service_type") // 'auto_reposition_monitor'
+  isRunning           Boolean  @default(false) @map("is_running")
+  lastRunAt           DateTime @default(now()) @map("last_run_at")
+  lastSuccessAt       DateTime @default(now()) @map("last_success_at")
+  positionsScanned    Int      @default(0) @map("positions_scanned")
+  repositionsTriggered Int     @default(0) @map("repositions_triggered")
+  errors              Int      @default(0)
+  lastError           String?  @map("last_error")
+  metadata            String?  @default("{}") // JSON metadata
+
+  @@index([serviceType, isRunning], map: "idx_service_state")
+}
+
+/// Position monitoring log (each scan result)
+model position_monitoring_log {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()"))
+  positionAddress      String   @map("position_address")
+  walletAddress        String   @map("wallet_address")
+  healthStatus         String   @map("health_status") // 'healthy', 'warning', 'critical', 'out_of_range'
+  urgencyLevel         String?  @map("urgency_level") // 'low', 'medium', 'high'
+  distanceFromRange    Int?     @map("distance_from_range")
+  feesAvailableUsd     Decimal? @map("fees_available_usd") @db.Decimal(20, 2)
+  actionTaken          String?  @map("action_taken") // 'none', 'notified', 'repositioned'
+  notificationSent     Boolean  @default(false) @map("notification_sent")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  @@index([positionAddress, createdAt(sort: Desc)], map: "idx_position_monitoring")
+  @@index([walletAddress, healthStatus], map: "idx_wallet_health")
+  @@index([createdAt], map: "idx_monitoring_time")
+}
+
+/// Reposition recommendations pending user approval
+model reposition_recommendations {
+  id                String    @id @default(dbgenerated("gen_random_uuid()"))
+  positionAddress   String    @map("position_address")
+  walletAddress     String    @map("wallet_address")
+  urgencyLevel      String    @map("urgency_level") // 'low', 'medium', 'high'
+  recommendedStrategy String  @map("recommended_strategy")
+  estimatedGasCost  Decimal   @map("estimated_gas_cost") @db.Decimal(20, 9)
+  feesAvailable     Decimal   @map("fees_available") @db.Decimal(20, 2)
+  reason            String
+  status            String    @default("pending") // 'pending', 'approved', 'rejected', 'executed', 'expired'
+  expiresAt         DateTime  @map("expires_at")
+  respondedAt       DateTime? @map("responded_at")
+  executedAt        DateTime? @map("executed_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  @@index([positionAddress, status], map: "idx_recommendation_status")
+  @@index([walletAddress, status, createdAt(sort: Desc)], map: "idx_wallet_recommendations")
+  @@index([expiresAt, status], map: "idx_recommendation_expiry")
+}
+
+/// Time-series metrics for monitoring dashboard
+model monitoring_metrics {
+  id                    String   @id @default(dbgenerated("gen_random_uuid()"))
+  metricType            String   @map("metric_type") // 'scan_duration', 'positions_checked', 'repositions_executed', 'errors'
+  metricValue           Decimal  @map("metric_value") @db.Decimal(20, 4)
+  labels                String?  @default("{}") // JSON labels for filtering
+  timestamp             DateTime @default(now())
+
+  @@index([metricType, timestamp(sort: Desc)], map: "idx_metric_time_series")
+}
+
+/// User credits balance for pay-per-use model
+model user_credits {
+  id             String   @id @default(dbgenerated("gen_random_uuid()"))
+  walletAddress  String   @unique @map("wallet_address")
+  balance        Decimal  @default(0) @map("balance") @db.Decimal(20, 2) // Credits balance (can have decimals)
+  totalPurchased Decimal  @default(0) @map("total_purchased") @db.Decimal(20, 2) // Total credits ever purchased
+  totalUsed      Decimal  @default(0) @map("total_used") @db.Decimal(20, 2) // Total credits ever used
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([walletAddress], map: "idx_wallet_credits")
+}
+
+/// Credit transactions for tracking purchases and usage
+model credit_transactions {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()"))
+  walletAddress        String    @map("wallet_address")
+  type                 String    @map("type") // 'purchase', 'usage', 'refund', 'bonus'
+  amount               Decimal   @map("amount") @db.Decimal(20, 2) // Credits amount (positive for purchase, negative for usage)
+  balanceBefore        Decimal   @map("balance_before") @db.Decimal(20, 2)
+  balanceAfter         Decimal   @map("balance_after") @db.Decimal(20, 2)
+  description          String?   @map("description") // Human-readable description
+  relatedResourceId    String?   @map("related_resource_id") // Position ID for usage, payment tx for purchase
+  paymentTxSignature   String?   @map("payment_tx_signature") // Solana transaction signature for purchases
+  x402PaymentProof     String?   @map("x402_payment_proof") // x402 payment header
+  usdcAmountPaid       Decimal?  @map("usdc_amount_paid") @db.Decimal(20, 6) // USDC amount paid for purchase
+  createdAt            DateTime  @default(now()) @map("created_at")
+
+  @@index([walletAddress, createdAt(sort: Desc)], map: "idx_wallet_credit_txs")
+  @@index([type, createdAt(sort: Desc)], map: "idx_credit_tx_type")
+  @@index([relatedResourceId], map: "idx_credit_tx_resource")
+}
+
+/// Position transaction history for accurate PnL calculation
+model position_transactions {
+  id                String   @id @default(dbgenerated("gen_random_uuid()::text"))
+  positionId        String   @map("position_id")
+  transactionType   String   @map("transaction_type") // 'deposit', 'withdraw', 'fee_claim', 'reward_claim'
+  timestamp         DateTime @default(now())
+  blockHeight       BigInt?  @map("block_height")
+  signature         String?  @unique
+
+  // Token amounts at transaction time
+  tokenXAmount      Decimal  @default(0) @map("token_x_amount") @db.Decimal(20, 8)
+  tokenYAmount      Decimal  @default(0) @map("token_y_amount") @db.Decimal(20, 8)
+
+  // Prices at transaction time
+  tokenXPrice       Decimal  @map("token_x_price") @db.Decimal(20, 8)
+  tokenYPrice       Decimal  @map("token_y_price") @db.Decimal(20, 8)
+
+  // USD value at transaction time
+  usdValue          Decimal  @map("usd_value") @db.Decimal(20, 8)
+
+  // Metadata
+  notes             String?
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  positions         positions @relation(fields: [positionId], references: [positionId], onDelete: Cascade)
+
+  @@index([positionId, transactionType, timestamp(sort: Desc)], map: "idx_position_tx_history")
+  @@index([timestamp(sort: Desc)], map: "idx_tx_timestamp")
+  @@index([signature], map: "idx_tx_signature")
+}
+
+/// Auto-reposition notifications for website users
+model reposition_notifications {
+  id          String    @id @default(dbgenerated("gen_random_uuid()"))
+  userId      String    @map("user_id")
+  walletAddress String  @map("wallet_address")
+  positionId  String    @map("position_id")
+  type        String    @map("type") // 'reposition_needed', 'insufficient_credits', 'reposition_success', 'reposition_failed'
+  message     String    @map("message")
+  metadata    String?   @map("metadata") // JSON string with additional data
+  isRead      Boolean   @default(false) @map("is_read")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  readAt      DateTime? @map("read_at")
+
+  @@index([userId, isRead, createdAt(sort: Desc)], map: "idx_user_notifications")
+  @@index([walletAddress, createdAt(sort: Desc)], map: "idx_wallet_notifications")
+  @@index([positionId], map: "idx_position_notifications")
+}
+
+/// Telegram notifications queue for bot to poll and send
+model telegram_notifications {
+  id            String    @id @default(dbgenerated("gen_random_uuid()"))
+  telegramId    BigInt    @map("telegram_id") // Telegram user ID
+  message       String    @map("message") // Message text to send
+  type          String    @map("type") // 'reposition_success', 'reposition_failed', 'info', 'warning', 'error'
+  metadata      String?   @map("metadata") // JSON string with additional data (transaction links, etc.)
+  sent          Boolean   @default(false) @map("sent") // Whether message has been sent
+  sentAt        DateTime? @map("sent_at") // When message was sent
+  error         String?   @map("error") // Error message if sending failed
+  retryCount    Int       @default(0) @map("retry_count") // Number of retry attempts
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  @@index([telegramId, sent, createdAt(sort: Desc)], map: "idx_telegram_notifications_pending")
+  @@index([sent, createdAt(sort: Asc)], map: "idx_telegram_notifications_queue")
 }
