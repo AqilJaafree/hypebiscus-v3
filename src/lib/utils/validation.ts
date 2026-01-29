@@ -1,5 +1,13 @@
 // Input validation utilities for API endpoints
 
+import {
+  validateRole,
+  validateContent,
+  validateOptionalObject,
+  validateWalletAddress as validateWalletAddressHelper,
+  XSS_PATTERN,
+} from './validationHelpers';
+
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
@@ -51,29 +59,16 @@ function validateSingleMessage(message: unknown, index: number): void {
 
   const msg = message as Record<string, unknown>
 
-  // Validate role
-  if (!msg.role || !['user', 'assistant'].includes(msg.role as string)) {
-    throw new ValidationError(`Message at index ${index} has invalid role`, 'messages')
-  }
-
-  // Validate content type
-  if (typeof msg.content !== 'string') {
-    throw new ValidationError(`Message at index ${index} content must be a string`, 'messages')
-  }
-
-  // Validate content not empty
-  if (msg.content.length === 0) {
-    throw new ValidationError(`Message at index ${index} content cannot be empty`, 'messages')
-  }
-
-  // Validate content length
-  if (msg.content.length > 10000) {
-    throw new ValidationError(`Message at index ${index} content too long. Maximum 10,000 characters allowed`, 'messages')
-  }
-
-  // Basic XSS prevention - reject obvious script tags
-  if (/<script|javascript:|on\w+\s*=/i.test(msg.content)) {
-    throw new ValidationError(`Message at index ${index} contains potentially malicious content`, 'messages')
+  try {
+    // Use shared validation helpers
+    validateRole(msg.role, 'role')
+    validateContent(msg.content, 'content', 10000, true)
+  } catch (error) {
+    // Re-throw with index information
+    if (error instanceof ValidationError) {
+      throw new ValidationError(`Message at index ${index}: ${error.message}`, 'messages')
+    }
+    throw error
   }
 }
 
@@ -98,41 +93,14 @@ function validatePortfolioStyle(portfolioStyle: unknown): void {
  * Validate pool data parameter
  */
 function validatePoolData(poolData: unknown): void {
-  if (poolData === undefined) {
-    return
-  }
-
-  if (typeof poolData !== 'object' || poolData === null) {
-    throw new ValidationError('Pool data must be an object', 'poolData')
-  }
-
-  // Convert to string to check serialized size
-  const poolDataString = JSON.stringify(poolData)
-  if (poolDataString.length > 50000) {
-    throw new ValidationError('Pool data too large. Maximum 50KB allowed', 'poolData')
-  }
+  validateOptionalObject(poolData, 'poolData', 50000)
 }
 
 /**
  * Validate Solana wallet address
  */
 function validateWalletAddress(walletAddress: unknown): void {
-  if (walletAddress === undefined) {
-    return
-  }
-
-  if (typeof walletAddress !== 'string') {
-    throw new ValidationError('Wallet address must be a string', 'walletAddress')
-  }
-
-  // Basic Solana address validation (32-44 characters, base58)
-  if (walletAddress.length < 32 || walletAddress.length > 44) {
-    throw new ValidationError('Invalid wallet address length', 'walletAddress')
-  }
-
-  if (!/^[1-9A-HJ-NP-Za-km-z]+$/.test(walletAddress)) {
-    throw new ValidationError('Invalid wallet address format', 'walletAddress')
-  }
+  validateWalletAddressHelper(walletAddress, 'walletAddress', false)
 }
 
 /**
@@ -346,4 +314,100 @@ export function validateMCPRequest(body: unknown): { isValid: boolean; error?: s
   }
 
   return { isValid: true };
+}
+
+// ============================================================================
+// Conversation & Message Validation
+// ============================================================================
+
+export interface ConversationCreateBody {
+  walletAddress: string;
+  title?: string;
+}
+
+export interface ConversationUpdateBody {
+  title: string;
+}
+
+export interface MessageCreateBody {
+  role: 'user' | 'assistant';
+  content: string;
+  poolData?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Validate conversation creation request
+ */
+export function validateConversationCreate(body: unknown): ConversationCreateBody {
+  if (!body || typeof body !== 'object') {
+    throw new ValidationError('Invalid request body');
+  }
+
+  const { walletAddress, title } = body as Record<string, unknown>;
+
+  // Validate wallet address (required)
+  validateWalletAddressHelper(walletAddress, 'walletAddress', true);
+
+  // Validate title (optional)
+  if (title !== undefined) {
+    validateContent(title, 'title', 200, false);
+  }
+
+  return {
+    walletAddress: walletAddress as string,
+    title: title as string | undefined,
+  };
+}
+
+/**
+ * Validate conversation update request
+ */
+export function validateConversationUpdate(body: unknown): ConversationUpdateBody {
+  if (!body || typeof body !== 'object') {
+    throw new ValidationError('Invalid request body');
+  }
+
+  const { title } = body as Record<string, unknown>;
+
+  // Validate title (required for update)
+  if (!title) {
+    throw new ValidationError('Title is required', 'title');
+  }
+
+  validateContent(title, 'title', 200, true);
+
+  return { title: title as string };
+}
+
+/**
+ * Validate message creation request
+ */
+export function validateMessageCreate(body: unknown): MessageCreateBody {
+  if (!body || typeof body !== 'object') {
+    throw new ValidationError('Invalid request body');
+  }
+
+  const { role, content, poolData, metadata } = body as Record<string, unknown>;
+
+  // Validate all fields using shared helpers
+  validateRole(role, 'role');
+  validateContent(content, 'content', 10000, true);
+  validateOptionalObject(poolData, 'poolData', 50000);
+  validateOptionalObject(metadata, 'metadata', 10000);
+
+  return {
+    role: role as 'user' | 'assistant',
+    content: content as string,
+    poolData: poolData as Record<string, unknown> | undefined,
+    metadata: metadata as Record<string, unknown> | undefined,
+  };
+}
+
+/**
+ * Validate wallet address query parameter
+ */
+export function validateWalletAddressParam(walletAddress: unknown): string {
+  validateWalletAddressHelper(walletAddress, 'walletAddress', true);
+  return walletAddress as string;
 }
